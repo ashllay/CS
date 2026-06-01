@@ -1,0 +1,180 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" ToolsVersion="Current" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Debug|Win32">
+      <Configuration>Debug</Configuration>
+      <Platform>Win32</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Release|Win32">
+      <Configuration>Release</Configuration>
+      <Platform>Win32</Platform>
+    </ProjectConfiguration>
+  </ItemGroup>
+  <PropertyGroup Label="Globals">
+    <VCProjectVersion>17.0</VCProjectVersion>
+    <ProjectGuid>{334569A0-64AE-45A9-8499-70FF66F9C9CB}</ProjectGuid>
+    <RootNamespace>ConnectServer</RootNamespace>
+    <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
+    <ProjectName>CS</ProjectName>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'" Label="Configuration">
+    <ConfigurationType>Application</ConfigurationType>
+    <PlatformToolset>v90</PlatformToolset>
+    <CharacterSet>MultiByte</CharacterSet>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'" Label="Configuration">
+    <ConfigurationType>Application</ConfigurationType>
+    <PlatformToolset>v90</PlatformToolset>
+    <CharacterSet>MultiByte</CharacterSet>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <ImportGroup Label="ExtensionSettings">
+  </ImportGroup>
+  <ImportGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'" Label="PropertySheets">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+  </ImportGroup>
+  <ImportGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'" Label="PropertySheets">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+  </ImportGroup>
+  <PropertyGroup Label="UserMacros" />
+  <PropertyGroup>
+    <_ProjectFileVersion>17.0.35707.178</_ProjectFileVersion>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
+    <OutDir>$(SolutionDir)$(Configuration)\</OutDir>
+    <IntDir>$(Configuration)\</IntDir>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
+    <LinkIncremental>false</LinkIncremental>
+  </PropertyGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
+    <ClCompile>
+      <Optimization>Disabled</Optimization>
+      <MinimalRebuild>true</MinimalRebuild>
+      <BasicRuntimeChecks>EnableFastChecks</BasicRuntimeChecks>
+      <RuntimeLibrary>MultiThreadedDebugDLL</RuntimeLibrary>
+      <WarningLevel>Level3</WarningLevel>
+      <DebugInformationFormat>EditAndContinue</DebugInformationFormat>
+      <AdditionalIncludeDirectories>.\;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <MultiProcessorCompilation>true</MultiProcessorCompilation>
+    </ClCompile>
+    <Link>
+      <GenerateDebugInformation>true</GenerateDebugInformation>
+      <TargetMachine>MachineX86</TargetMachine>
+    </Link>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
+    <ClCompile>
+      <Optimization>Disabled</Optimization>
+      <IntrinsicFunctions>false</IntrinsicFunctions>
+      <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
+      <FunctionLevelLinking>true</FunctionLevelLinking>
+      <WarningLevel>Level3</WarningLevel>
+      <DebugInformationFormat>ProgramDatabase</DebugInformationFormat>
+      <PreprocessorDefinitions>WIN32;_WINDOWS;NDEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <MultiProcessorCompilation>true</MultiProcessorCompilation>
+      <AssemblerOutput>All</AssemblerOutput>
+      <AdditionalIncludeDirectories>.\;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <PrecompiledHeader>Use</PrecompiledHeader>
+      <BrowseInformation>true</BrowseInformation>
+      <StringPooling>true</StringPooling>
+    </ClCompile>
+    <Link>
+      <GenerateDebugInformation>true</GenerateDebugInformation>
+      <OptimizeReferences>
+      </OptimizeReferences>
+      <EnableCOMDATFolding>
+      </EnableCOMDATFolding>
+      <TargetMachine>MachineX86</TargetMachine>
+      <SubSystem>Windows</SubSystem>
+      <AdditionalDependencies>comctl32.lib;ws2_32.lib;shell32.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <ProgramDatabaseFile>$(SolutionDir)$(Configuration)/CS.pdb</ProgramDatabaseFile>
+      <GenerateMapFile>true</GenerateMapFile>
+      <MapFileName>$(SolutionDir)$(Configuration)/CS.map</MapFileName>
+      <MapExports>true</MapExports>
+      <AssemblyDebug>true</AssemblyDebug>
+      <RandomizedBaseAddress>true</RandomizedBaseAddress>
+    </Link>
+    <ResourceCompile>
+      <Culture>0x0412</Culture>
+      <PreprocessorDefinitions>NDEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <AdditionalIncludeDirectories>$(IntDir);%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+    </ResourceCompile>
+    <Manifest>
+      <OutputManifestFile>$(IntDir)$(TargetName)$(TargetExt).embed.manifest</OutputManifestFile>
+    </Manifest>
+  </ItemDefinitionGroup>
+  <ItemGroup>
+    <Image Include="app_main.ico" />
+    <Image Include="cs_red.ico" />
+    <Image Include="cs_yellow.ico" />
+    <Image Include="cs_green.ico" />
+    <Image Include="monitor_off.ico" />
+    <Image Include="monitor_red.ico" />
+    <Image Include="node_split.ico" />
+    <Image Include="toolbar_strip.bmp" />
+    <Image Include="webzen_logo.bmp" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="..\common\winutil.h" />
+    <ClInclude Include="..\include\ProDef.h" />
+    <ClInclude Include="CPIM.h" />
+    <ClInclude Include="CriticalSec.h" />
+    <ClInclude Include="CS.h" />
+    <ClInclude Include="DefaultWindow.h" />
+    <ClInclude Include="giocp.h" />
+    <ClInclude Include="IpAddrMng.h" />
+    <ClInclude Include="LogProc.h" />
+    <ClInclude Include="LogToFile.h" />
+    <ClInclude Include="LogToListBox.h" />
+    <ClInclude Include="PerfMonEx.h" />
+    <ClInclude Include="Protocol.h" />
+    <ClInclude Include="resource.h" />
+    <ClInclude Include="StdAfx.h" />
+    <ClInclude Include="targetver.h" />
+    <ClInclude Include="TrayIconControl.h" />
+    <ClInclude Include="TreeViewControl.h" />
+    <ClInclude Include="udpprotocol.h" />
+    <ClInclude Include="User.h" />
+    <ClInclude Include="WhatsUpDummyServer.h" />
+    <ClInclude Include="WzMemScript.h" />
+    <ClInclude Include="WzMultiCastSock.h" />
+    <ClInclude Include="WZQueue.h" />
+    <ClInclude Include="WzTcpSock.h" />
+    <ClInclude Include="WzUdp.h" />
+  </ItemGroup>
+  <ItemGroup>
+    <ResourceCompile Include="CS.rc" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="..\common\winutil.cpp" />
+    <ClCompile Include="CPIM.cpp" />
+    <ClCompile Include="CriticalSec.cpp" />
+    <ClCompile Include="CS.cpp" />
+    <ClCompile Include="DefaultWindow.cpp" />
+    <ClCompile Include="giocp.cpp" />
+    <ClCompile Include="IpAddrMng.cpp" />
+    <ClCompile Include="LogProc.cpp" />
+    <ClCompile Include="LogToFile.cpp" />
+    <ClCompile Include="LogToListBox.cpp" />
+    <ClCompile Include="PerfMonEx.cpp" />
+    <ClCompile Include="Protocol.cpp" />
+    <ClCompile Include="StdAfx.cpp">
+      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">Create</PrecompiledHeader>
+    </ClCompile>
+    <ClCompile Include="TrayIconControl.cpp" />
+    <ClCompile Include="TreeViewControl.cpp" />
+    <ClCompile Include="udpprotocol.cpp" />
+    <ClCompile Include="User.cpp" />
+    <ClCompile Include="WhatsUpDummyServer.cpp" />
+    <ClCompile Include="WzMemScript.cpp" />
+    <ClCompile Include="WzMultiCastSock.cpp" />
+    <ClCompile Include="WZQueue.cpp" />
+    <ClCompile Include="WzTcpSock.cpp" />
+    <ClCompile Include="WzUdp.cpp" />
+  </ItemGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+  <ImportGroup Label="ExtensionTargets">
+  </ImportGroup>
+</Project>

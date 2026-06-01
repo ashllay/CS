@@ -1,0 +1,25 @@
+[FtpServerInfo]
+;Address = 10.1.48.33
+Address = mupatch.nefficient.co.kr
+Port    = 21
+ID      = MuOnline
+PASS	= MuOnline
+
+[GameServerInfo]
+ClientVersion = 1.03.13
+ClientVersion_TEST = 1.03.19
+
+VersionFileName = version.wvd
+DownLoadType = 0
+
+[LocalNetworkConnect]
+LocalConnectOnly = 0
+
+
+[DDOS]
+PacketPerSec = 50
+InvalidPacket = 100
+ProhibitSecond = 5
+NoCheckingIP = 218.234.76.254
+
+
