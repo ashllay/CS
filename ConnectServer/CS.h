@@ -15,9 +15,7 @@
 // Global Variables
 // =========================================================================
 extern int g_iPERF_IDX_MEM;
-extern BYTE ClientV3;
-extern BYTE ClientV1;
-extern BYTE ClientV2;
+extern BYTE ClientV3, ClientV1, ClientV2;
 extern char FtpServerIpAddress_LocalTest[];
 extern char FtpServerIpAddress[];
 extern WORD HTTPServerPort;
@@ -28,9 +26,7 @@ extern char HTTPServerFileName[];
 extern char FtpServerFileName[];
 extern char HTTPServerPass[];
 extern char FtpServerID_LocalTest[];
-extern BYTE ClientTEST_V1;
-extern BYTE ClientTEST_V3;
-extern BYTE ClientTEST_V2;
+extern BYTE ClientTEST_V1, ClientTEST_V3, ClientTEST_V2;
 extern char ClientVersion[];
 extern char ClientVersion_TEST[];
 extern char HTTPServerID[];
@@ -75,7 +71,7 @@ struct PMSG_CCS_INFOLIST
     BYTE  unk7;
 
     WORD  MaxUserCount;     // +8
-    WORD  FreeUserSlots;    // +10
+    WORD  PCbangCount;    // +10
     WORD  UserCount;        // +12
     WORD  ServerFlag;       // +14
 };
@@ -94,7 +90,7 @@ struct PMSG_CCS_INFOSHARE
 };
 #pragma pack(pop)
 
-extern PMSG_CCS_INFOSHARE g_CCSInfoShare;
+extern PMSG_CCS_INFOSHARE g_cCCS_INFOSHARE_BUF;
 //#pragma pack(push, 1)
 
 typedef struct
@@ -108,7 +104,7 @@ typedef struct
     BYTE  ServerType;
     DWORD LiveTime;
     WORD  MaxUserCount;
-    WORD  FreeUserSlots;
+    WORD  PCbangCount;
     WORD  UserCount;
     BYTE  bShow;
     WORD  ServerFlag;

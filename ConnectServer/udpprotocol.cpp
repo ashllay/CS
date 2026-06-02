@@ -24,7 +24,8 @@ void UdpProtocolCore(BYTE protoNum, BYTE* aRecv, int aLen, char* ip)
 
 void GameServerInfo(PMSG_SERVERINFO* lpMsg)
 {
-	GameServerInfoUpdate(lpMsg->ServerCode, lpMsg->Percent, lpMsg->MaxUserCount, 0, lpMsg->FreeUserSlots, lpMsg->UserCount);
+	GameServerInfoUpdate(lpMsg->ServerCode, lpMsg->Percent, lpMsg->MaxUserCount, 0, 0, lpMsg->UserCount);
+	//GameServerInfoUpdate(lpMsg->ServerCode, lpMsg->Percent, lpMsg->UserCount, 0, 0, lpMsg->MaxUserCount);
 	CServerListMake();
 }
 
@@ -94,7 +95,7 @@ void WriteGameServerInfo()
 				MainServer,
 				SubServer,
 				GameServerList[n].UserCount,        // PersonUserCount
-				GameServerList[n].FreeUserSlots);   // PCRoomUserCount
+				GameServerList[n].PCbangCount);   // PCRoomUserCount
 		}
 	}
 

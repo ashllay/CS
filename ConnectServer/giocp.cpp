@@ -12,7 +12,7 @@
 // =========================================================================
 SOCKET				g_Listen = INVALID_SOCKET;
 HANDLE				g_IocpThreadHandle;
-//CRITICAL_SECTION	g_critERROR_LOG = { NULL, 0, 0, NULL, NULL, 0 };
+CRITICAL_SECTION	g_critERROR_LOG = { NULL, 0, 0, NULL, NULL, 0 };
 CPIM				g_cPIM(64);
 int					g_PIMQueueIndex = 0;
 CRITICAL_SECTION	g_CS = { NULL, 0, 0, NULL, NULL, 0 };
@@ -41,6 +41,10 @@ void GetLastErrorMsg()
 		0,
 		NULL
 	);
+
+	strcpy(ErrorMsg, (LPCTSTR)lpMsgBuf);
+	// Free the buffer.
+	LocalFree(lpMsgBuf);
 	LeaveCriticalSection(&g_critERROR_LOG);
 }
 
@@ -132,6 +136,7 @@ int CreateListenSocket()
 // =========================================================================
 // IocpServerWorker - Main IOCP Server Loop
 // =========================================================================
+//#define __TEST
 #ifdef __TEST
 DWORD WINAPI IocpServerWorker()
 {
@@ -442,7 +447,7 @@ DWORD WINAPI IocpServerWorker()
 			if (strcmp(szIP, "218.234.76.254") != 0 && strncmp(szIP, "172.30.120", 6) != 0)
 			{
 				g_LogFileError.Output("[Local Only #2] Block IP : %s ", szIP);
-
+				sizeof(_PER_IO_CONTEXT);
 				BOOL bDontLinger = TRUE;
 				setsockopt(Accept, SOL_SOCKET, SO_DONTLINGER, (char*)&bDontLinger, sizeof(bDontLinger));
 				closesocket(Accept);
@@ -548,7 +553,7 @@ void ProcessIOCPSignal(DWORD ClientIndex, DWORD dwIoSize, PER_IO_CONTEXT* lpOver
 	if (!lpOverlapped || ClientIndex >= MAX_CONNECTOBJECT)
 		return;
 
-	/*PER_SOCKET_CONTEXT**/ lpPerSocketContext = &gObj[ClientIndex].PerSocketContext;
+	lpPerSocketContext = &gObj[ClientIndex].PerSocketContext;
 	InterlockedDecrement(&lpPerSocketContext->dwIOCount);
 
 	if (dwIoSize == 0)
@@ -559,9 +564,13 @@ void ProcessIOCPSignal(DWORD ClientIndex, DWORD dwIoSize, PER_IO_CONTEXT* lpOver
 
 	lpIOContext = (LPPER_IO_CONTEXT)lpOverlapped;
 	if (lpIOContext->IOOperation == SEND_IO)
+	{
 		IOCPSendSignal(lpPerSocketContext, lpOverlapped, dwIoSize);
+	}
 	else if (lpIOContext->IOOperation == RECV_IO)
+	{
 		IOCPRecvSignal(lpPerSocketContext, lpOverlapped, dwIoSize);
+	}
 }
 
 // =========================================================================
@@ -750,7 +759,7 @@ int ParsingRecvData(PER_IO_CONTEXT* lpIOContext, int uIndex, PER_SOCKET_CONTEXT*
 #endif
 	while (true)
 	{
-		if (recvBuf[lOfs] == 0xC1)
+		if (recvBuf[lOfs] == PMHC_BYTE)
 		{
 			LPPBMSG_HEAD pHead	= (LPPBMSG_HEAD)(recvBuf + lOfs);
 			packetSize			= pHead->size;
@@ -759,7 +768,7 @@ int ParsingRecvData(PER_IO_CONTEXT* lpIOContext, int uIndex, PER_SOCKET_CONTEXT*
 			g_LogProc.LogAddFunc("Packet: C1 size=%d head=%02X", packetSize, headCode);
 #endif
 		}
-		else if (recvBuf[lOfs] == 0xC2)
+		else if (recvBuf[lOfs] == PMHC_WORD)
 		{
 			LPPWMSG_HEAD pHead	= (LPPWMSG_HEAD)(recvBuf + lOfs);
 			packetSize			= ((WORD)(pHead->sizeH) << 8);

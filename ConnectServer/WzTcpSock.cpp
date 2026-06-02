@@ -7,8 +7,6 @@ CRITICAL_SECTION CWzTcpSock::m_critSOCKET_LPOBJ = { NULL, 0, 0, NULL, NULL, 0 };
 WNDPROC CWzTcpSock::m_lpOldWndProc = NULL;
 std::map<SOCKET, CWzTcpSock*> CWzTcpSock::m_mapSOCKET_LPOBJ;
 
-// Static format strings
-static const char* s_szSendBufferFull = "Send buffer is full";
 
 // =========================================================================
 // InitializeWzTcpSock
@@ -495,13 +493,13 @@ int CWzTcpSock::RecvPacket()
         BYTE head = 0;
         BYTE sub = 0;
 
-        if (lpMsg[0] == 0xC1)
+        if (lpMsg[0] == PMHC_BYTE)
         {
             size = lpMsg[1];
             head = lpMsg[2];
             sub = lpMsg[3];
         }
-        else if (lpMsg[0] == 0xC2)
+        else if (lpMsg[0] == PMHC_WORD)
         {
             size = lpMsg[2] + (lpMsg[1] << 8);
             head = lpMsg[3];
@@ -595,7 +593,7 @@ int CWzTcpSock::SendPacket(char* buf, int len)
     if (SOCKET_BUFFER_SIZE - m_SendSize > nRemaining)
     {
     LABEL_BUFFER_FULL:
-        SavePrivateErrorMessage((char*)s_szSendBufferFull);
+        SavePrivateErrorMessage("Send Buffer is Full");
         goto LABEL_DISCONNECT;
     }
 

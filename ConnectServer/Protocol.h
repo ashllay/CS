@@ -17,44 +17,28 @@ typedef PMSG_DEFRESULT	PMSG_CONNECTRESULT;
 //----------------------------------------------------------------------------
 // [0x01] 클라이언트가 버젼 정보를 보낸다.
 //----------------------------------------------------------------------------
-struct PMSG_VERSION_OLD {
-    BYTE c;
-    BYTE size;
-    BYTE headcode;
-    BYTE subcode;
-    WORD Version; // ClientV1 << 8 | ClientV2
-};
-
-struct PMSG_VERSION_NEW {
-    BYTE c;
-    BYTE size;
-    BYTE headcode;
-    BYTE subcode;
-    WORD VersionHi; // ClientV3 << 8 | ClientV2
-    BYTE VersionLo; // ClientV1
-};
-
-struct GAMESERVER_INFO
+typedef struct
 {
-    BOOL Live;              // -4
-    WORD ServerCode;        // +0
-    BYTE unk02[40];
-    BYTE ServerType;        // +42
-    BYTE unk2B[5];
-    WORD MaxUserCount;      // +48
-    BYTE unk32[2];
-    WORD UserCount;         // +52
-    BYTE unk36[18];
-    WORD ServerFlag;        // +72
-    BYTE unk4A[134];
+    PBMSG_HEAD	h;
+    BYTE		Version[2];// ClientV1 << 8 | ClientV2
+    BYTE		TEMP[100];
+} PMSG_VERSION_OLD, * LPPMSG_VERSION_OLD;
+
+
+struct PMSG_VERSION_NEW
+{
+    PBMSG_HEAD h;
+    BYTE Version1;
+    BYTE Version2;
+    BYTE Version3;
 };
 
 // [0x02] Server list count header (word-size)
 typedef struct
 {
-    PWMSG_HEAD h;
-    BYTE subcode;
-    BYTE Count;
+    PWMSG_HEAD2	h;
+    BYTE	CountH;
+    BYTE	CountL;
 } PMSG_SERVERLISTCOUNT;
 
 struct PMSG_SERVERLIST
@@ -77,7 +61,7 @@ typedef struct
     WORD UserCount;
 
     BYTE ServerType;
-    BYTE unk;
+    //BYTE unk;
 
     WORD ServerFlag;
 
@@ -85,25 +69,19 @@ typedef struct
 
 #pragma pack(pop)
 
-#pragma pack(push, 1)
-
+//----------------------------------------------------------------------------
+// [0x01] 업데이트가 필요하다.. FTP서버 정보를 알려준다.
+//----------------------------------------------------------------------------
 struct PMSG_FILESERVERINFO
 {
     PBMSG_HEAD h;
-
     BYTE ClientVersion[3];
-
     char IpAddress[100];
-
     WORD Port;
-
     char FtpId[20];
     char FtpPass[20];
     char Folder[20];
 };
-
-#pragma pack(pop)
-
 
 struct PMSG_FILESERVERINFO_CCS
 {
@@ -114,43 +92,38 @@ struct PMSG_FILESERVERINFO_CCS
 
 // [0xF4][0x03] Request game server IP/Port
 struct PMSG_GAMESERVERIPPORT_REQUEST {
-    PBMSG_HEAD h;
-    BYTE subcode;
+    PBMSG_HEAD2 h;
     BYTE pos;  // Server index
 };
 
 // [0xF4][0x03] Response with game server IP/Port
 struct PMSG_GAMESERVERIPPORT {
-    PBMSG_HEAD h;
-    BYTE subcode;
+    PBMSG_HEAD2 h;
     char ServerIp[15];
     WORD port;
 };
 // [0x02] Server list request
-struct PMSG_SERVERLISTREQUEST {
-    PBMSG_HEAD h;
-};
+typedef struct
+{
+    PBMSG_HEAD	h;
+} PMSG_SERVERLISTREQUEST, * LPPMSG_SERVERLISTREQUEST;
 
-#pragma pack(push, 1)
+#define SERVERCODE_EXPAND
 
 typedef struct
 {
-    PBMSG_HEAD h;          // +0
-
-    WORD ServerCode;       // +4
-    BYTE Percent;          // +6
-    BYTE Padding07;        // +7
-
-    WORD MaxUserCount;     // +8
-    WORD FreeUserSlots;    // +10
-    WORD Reserved;         // +12
-
-    WORD UserCount;        // +14
-
+    PBMSG_HEAD	h;
+#ifdef SERVERCODE_EXPAND	
+    short	ServerCode;
+#else
+    BYTE	ServerCode;
+#endif
+    BYTE	Percent;
+    short	UserCount;
+    short   AccountCount;
+    short	PCbangCount;
+    short	MaxUserCount;
 } PMSG_SERVERINFO, * LPPMSG_SERVERINFO;
-
-#pragma pack(pop)
-
 //----------------------------------------------------------------------------
 // CS UDP [0x02] 인증 서버의 RecvQ 카운트를 전송 받는다
 //----------------------------------------------------------------------------
@@ -177,11 +150,18 @@ struct PMSG_CONNECTSERVER_INFO
 
 #pragma pack(pop)
 
+struct PMSG_DEFAULT
+{
+    PBMSG_HEAD h;
+    BYTE subcode;
+};
+
 // Function Prototypes
-void ProtocolCore(unsigned char protoNum, unsigned char* aRecv, int aLen, short aIndex);
+void ProtocolCore(BYTE protoNum, BYTE* aRecv, int aLen, short aIndex);
 void UpdateGameServerList(int aIndex);
 void ReqGameServerList(int aIndex);
 void SCConnectResultSend(char result, unsigned int aIndex);
+void ChangeGameServerList();
 void CSVersionRecv_OLD(PMSG_VERSION_OLD* lpMsg, int aIndex);
 void CSVersionRecv_NEW(PMSG_VERSION_NEW* aRecv, int aIndex);
 void CSVersionRecv_TEST(PMSG_VERSION_NEW* aRecv, int aIndex);
@@ -198,7 +178,7 @@ void SCFileServerInfoSend_CCS(unsigned int aIndex);
 void SCNoUpdateSend_CCS(unsigned int aIndex);
 void SCHTTPFileServerInfoSend(unsigned int aIndex);
 void CSGetServerListRecv(PMSG_SERVERLISTREQUEST* aRecv, unsigned int aIndex);
-void CSGetServerListSend(unsigned int aIndex);
+void CSGetServerListSend(int aIndex);
 void CSGetServerUserCount(unsigned int aIndex);
 void CSGetServerIpPort(PMSG_GAMESERVERIPPORT_REQUEST* lpMsg, unsigned int aIndex);
 void SendJoinServerBusy(int aIndex, BYTE pos);

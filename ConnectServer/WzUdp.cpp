@@ -12,7 +12,6 @@
 //////////////////////////////////////////////////////////////////////
 // Construction/Destruction
 //////////////////////////////////////////////////////////////////////
-WzUdp g_WzUdp;
 
 DWORD WINAPI WzUdpRecvThread(WzUdp* lpWzUdp);
 //DWORD WINAPI WzUDPSendThread(LPVOID p);
@@ -144,12 +143,12 @@ BOOL WzUdp::MuProtocolParse(LPBYTE RecvData, int& nRecvDataLen, char* ip)
 
 	while (TRUE)
 	{
-		if (RecvData[lOfs] == 0xC1)
+		if (RecvData[lOfs] == PMHC_BYTE)
 		{
 			size = *(RecvData + lOfs + 1);
 			headcode = *(RecvData + lOfs + 2);
 		}
-		else if (RecvData[lOfs] == 0xC2)
+		else if (RecvData[lOfs] == PMHC_WORD)
 		{
 			size = (WORD)(*(RecvData + lOfs + 1));
 			size <<= 8;

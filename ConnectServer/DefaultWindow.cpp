@@ -1,4 +1,3 @@
-// DefaultWindow.cpp
 #include "StdAfx.h"
 #include "DefaultWindow.h"
 #include "LogProc.h"
@@ -7,7 +6,7 @@ char WindowName[] = "접속서버 인터페이스";
 
 CDefaultWindow::CDefaultWindow()
 {
-	strcpy(m_szClassName, "DefaultWndClass");
+	strcpy(m_szClassName, "DEFAULT_WNDCLASS");
 }
 
 CDefaultWindow::~CDefaultWindow()
@@ -25,16 +24,16 @@ void CDefaultWindow::mfn_CreateWindow(HINSTANCE hInst, HWND hWndParent, int X, i
 
 	WndClass.cbWndExtra = 0;
 	WndClass.hbrBackground = (HBRUSH)GetStockObject(0);
-	WndClass.hCursor = LoadCursorA(0, (LPCSTR)IDC_ARROW);
-	WndClass.hIcon = LoadIconA(0, (LPCSTR)IDI_APPLICATION);
+	WndClass.hCursor = LoadCursor(0, (LPCSTR)IDC_ARROW);
+	WndClass.hIcon = LoadIcon(0, (LPCSTR)IDI_APPLICATION);
 	WndClass.hInstance = hInst;
-	WndClass.lpfnWndProc = this->WndProc;
+	WndClass.lpfnWndProc = CDefaultWindow::WndProc;
 	WndClass.lpszClassName = m_szClassName;
 	WndClass.lpszMenuName = 0;
 	WndClass.style = CS_HREDRAW | CS_VREDRAW | CS_DBLCLKS;
-	RegisterClassA(&WndClass);
+	RegisterClass(&WndClass);
 
-	Window = CreateWindowExA(
+	Window = CreateWindowEx(
 		0,
 		WndClass.lpszClassName,
 		WindowName,
@@ -50,6 +49,7 @@ void CDefaultWindow::mfn_CreateWindow(HINSTANCE hInst, HWND hWndParent, int X, i
 
 	m_hWnd = Window;
 
+	// Original uses ShowWindow with nCmdShow = 5 (SW_SHOW)
 	ShowWindow(Window, SW_SHOW);
 }
 
@@ -83,44 +83,38 @@ void CDefaultWindow::mfn_ClearWindow()
 
 LRESULT CALLBACK CDefaultWindow::WndProc(HWND hWnd, UINT Msg, WPARAM wParam, LPARAM lParam)
 {
-	// Forward logging-related messages to CLogProc
-	switch (Msg)
+	// Match original EXACT logic from IDA
+	if (Msg > 0xF)
 	{
-	case WM_CREATE:  // 1
-	{
-		// Initialize logging system
-		// Original: CLogProc::LogInit((CLogProc*)g_LogProc, 1)
-		g_LogProc.LogInit(TRUE);
-		return 0;
+		// Messages > 15
+		if (Msg != 20 && Msg != 513 && Msg != 515)
+			return DefWindowProcA(hWnd, Msg, wParam, lParam);
+		return 0;  // WM_ERASEBKGND (20), WM_LBUTTONDOWN (513), WM_LBUTTONDBLCLK (515)
 	}
 
-	case WM_DESTROY:  // 2
+	// Messages 0-15
+	if (Msg != 15)  // Not WM_PAINT
 	{
-		// Post quit message to end message loop
-		PostQuitMessage(0);
-		return 0;
+		if (Msg == 1)  // WM_CREATE
+		{
+			g_LogProc.LogInit(TRUE);
+			return 0;
+		}
+
+		if (Msg != 2)  // Not WM_DESTROY
+		{
+			if (Msg != 5)  // Not WM_SIZE
+				return DefWindowProcA(hWnd, Msg, wParam, lParam);
+			// WM_SIZE (5) falls through to LABEL_10
+		}
+		else  // WM_DESTROY (2)
+		{
+			PostQuitMessage(0);
+			return 0;
+		}
 	}
 
-	case WM_SIZE:  // 5
-	case WM_PAINT:  // 15
-	{
-		// Paint log text to window
-		// Original: CLogProc::LogTextPaintProc((CLogProc*)g_LogProc, hWnd)
-		g_LogProc.LogTextPaintProc(hWnd);
-		// Fall through to DefWindowProc for default painting
-		break;
-	}
-
-	case WM_LBUTTONDOWN:  // 0x201 = 513
-	case WM_LBUTTONDBLCLK:  // 0x203 = 515
-	case WM_NCHITTEST:  // 0x84 = 132 (not in original but common)
-	{
-		// Swallow mouse messages to prevent default behavior
-		// Original returns 0 for these
-		return FALSE;
-	}
-	}
-
-	// Default message handling
+	// LABEL_10: WM_PAINT (15) and WM_SIZE (5) end up here
+	g_LogProc.LogTextPaintProc(hWnd);
 	return DefWindowProcA(hWnd, Msg, wParam, lParam);
 }

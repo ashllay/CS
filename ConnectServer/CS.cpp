@@ -20,14 +20,13 @@
 HWND hErrorLogDlg;
 HINSTANCE g_hInst;
 int g_iPERF_IDX_MEM;
-BYTE ClientV3;
-BYTE ClientV1;
-BYTE ClientV2;
+BYTE ClientV3, ClientV1, ClientV2;
 char FtpServerIpAddress_LocalTest[104];
+WzUdp cUdpSoc;
 HANDLE LoopThreadHandle;
 char FtpServerIpAddress[102];
 WORD HTTPServerPort;
-CRITICAL_SECTION g_critERROR_LOG = { NULL, 0, 0, NULL, NULL, 0 };//not the right place for this
+//CRITICAL_SECTION g_critERROR_LOG = { NULL, 0, 0, NULL, NULL, 0 };//not the right place for this
 CRITICAL_SECTION gameservercriti;
 int g_iPERF_IDX_CPU;
 CWzTcpSock g_GameServerInfoSock;
@@ -39,9 +38,7 @@ char HTTPServerPass[28];
 CDefaultWindow CDW;
 HWND hReloadDataDlg;
 char FtpServerID_LocalTest[21];
-BYTE ClientTEST_V1;
-BYTE ClientTEST_V3;
-BYTE ClientTEST_V2;
+BYTE ClientTEST_V1, ClientTEST_V3, ClientTEST_V2;
 GameServerList_Struct	GameServerList[MAX_GAMESERVERLIST];				// 일반 서버리스트 전송용
 char ClientVersion[12];
 char ClientVersion_TEST[16];
@@ -60,7 +57,7 @@ WORD FtpServerPort_LocalTest;
 BOOL g_bDoTerminateLoopThread = FALSE;
 CWhatsUpDummyServer g_WhatUpDummyServer;
 HWND hAboutDlg;
-WzUdp cUdpSoc;
+
 int g_nICON_IMAGEID;
 DWORD g_dwMaxPacketPerSec = 30;   // Max packets/sec
 DWORD g_dwMaxInvalidPackets = 100;  // Max invalid packets
@@ -87,9 +84,9 @@ BOOL g_bGameServerLive = TRUE;          // Game server heartbeat active
 HWND hMcIpSelectDlg;
 HWND hPbIpSelectDlg;
 
-PMSG_CCS_INFOSHARE g_CCSInfoShare;
+PMSG_CCS_INFOSHARE g_cCCS_INFOSHARE_BUF;
 
-CIpAddrMng g_CsIpAddrMng;//not the right place for this
+//CIpAddrMng g_CsIpAddrMng;//not the right place for this
 
 // Buffer for string formatting
 static char String[256];
@@ -146,11 +143,11 @@ INT_PTR CALLBACK MainDlgProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
 
 		CTreeCtl.Start(DlgItem, hWnd);
 
-		CTreeCtl.AddImagetoImageList(LoadIcon(g_hInst, MAKEINTRESOURCE(107)));
-		CTreeCtl.AddImagetoImageList(LoadIcon(g_hInst, MAKEINTRESOURCE(104)));
-		CTreeCtl.AddImagetoImageList(LoadIcon(g_hInst, MAKEINTRESOURCE(105)));
+		CTreeCtl.AddImagetoImageList(LoadIcon(g_hInst, MAKEINTRESOURCE(IDB_BITMAP_TOOLBAR)));//107?
+		CTreeCtl.AddImagetoImageList(LoadIcon(g_hInst, MAKEINTRESOURCE(IDI_ICON_STATE_ONLINE)));//132?
+		CTreeCtl.AddImagetoImageList(LoadIcon(g_hInst, MAKEINTRESOURCE(IDI_ICON_STATE_ERROR)));//105?
 
-		g_OldTreeViewProc = (WNDPROC)SetWindowLong(DlgItem, GWL_WNDPROC, (LONG)CTreeViewControl::TreeViewSubProc);
+		g_OldTreeViewProc = (WNDPROC)SetWindowLong(hWnd, GWL_WNDPROC, (LONG)CTreeViewControl::TreeViewSubProc);
 
 		CTrayCtl.Start(g_hInst, hWnd, IDI_ICON_STATE_ONLINE, "ConnectServer OK");
 
@@ -173,7 +170,7 @@ INT_PTR CALLBACK MainDlgProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
 
 		InitializeCriticalSection(&gameservercriti);
 		InitializeCriticalSection(&g_critERROR_LOG);
-		InitializeCriticalSection(&g_critCSINFO_LIST);
+		
 		unsigned int ThreadID;
 
 		hThread = (HANDLE)_beginthreadex(
@@ -193,7 +190,7 @@ INT_PTR CALLBACK MainDlgProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
 		SetTimer(hMainDlg, 7, 3000, NULL);    // 3 sec - Write server info
 		SetTimer(hMainDlg, 8, 3000, NULL);    // 3 sec - Multicast update
 
-		
+		InitializeCriticalSection(&g_critCSINFO_LIST);
 
 		if (g_PerfMonEx.Initialize())
 		{
@@ -202,7 +199,7 @@ INT_PTR CALLBACK MainDlgProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
 		}
 		else
 		{
-			MessageBox(hWnd, "CPerfMonEx Initialize Failed", "ERROR", MB_OK);
+			MessageBox(hWnd, "CPerfMonEx Initialize Failed", "ERROR", MB_ICONERROR | MB_OK);
 		}
 
 		CheckNShowPublicIPAddress();
@@ -282,7 +279,7 @@ INT_PTR CALLBACK MainDlgProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
 		case IDC_BTN_RELEASE_RESTRICTED_IP:
 		{
 			g_CsIpAddrMng.ReleaseRestriectedIpAddr();
-			SetDlgItemInt(hWnd, IDC_BTN_RELEASE_RESTRICTED_IP, g_CsIpAddrMng.GetRestrictedIpIpAddrCount(), FALSE);
+			SetDlgItemInt(hWnd, IDC_EDIT_PUBLIC_IP, g_CsIpAddrMng.GetRestrictedIpIpAddrCount(), FALSE);
 			return TRUE;
 		}
 
@@ -371,7 +368,7 @@ INT_PTR CALLBACK MainDlgProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
 		}
 
 		case 8006:
-		case 0x9C58:
+		case ID_MENU_MULTICAST_CS_INFO:
 		{
 			if (!hMcIpSelectDlg)
 			{
@@ -380,7 +377,7 @@ INT_PTR CALLBACK MainDlgProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
 			return TRUE;
 		}
 
-		case 0x9C4B:
+		case ID_MENU_SHOW_CS_UI:
 		{
 			ShowWindow(hWnd, SW_SHOW);
 			SetForegroundWindow(hWnd);
@@ -441,7 +438,7 @@ INT_PTR CALLBACK MainDlgProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
 			lpText->lpszText = "Show Fatal Error Log List";
 			break;
 
-			//case 0x1F46:
+		case 0x1F46:
 		case ID_TOOL_MULTICAST:
 			lpText->lpszText = g_bMultiCastOn ? "Multicasting CS Info ON" : "Multicasting CS Info OFF";
 			break;
@@ -456,22 +453,17 @@ INT_PTR CALLBACK MainDlgProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
 		{
 		case 1:
 		{
-			g_nICON_IMAGEID = (g_nICON_IMAGEID + 1) % 2;
-			if (g_nICON_IMAGEID)
+			if (g_nICON_IMAGEID % 2)
 			{
-				//SendMessage(hToolBar, TB_CHANGEBITMAP, 0x1F45, 7);
-				SendMessageA(hToolBar, TB_CHECKBUTTON, ID_TOOL_ERROR_LOG, MAKELPARAM(1, 0));
+				SendMessage(hToolBar, TB_CHANGEBITMAP, ID_TOOL_ERROR_LOG, 7);
 				CTrayCtl.SetTrayIcon(IDI_ICON_TEXT_CS_RED, "ConnectServer Error");
 			}
 			else
 			{
-				//SendMessage(hToolBar, TB_CHANGEBITMAP, 0x1F45, 6);
-				SendMessageA(hToolBar, TB_CHECKBUTTON, ID_TOOL_ERROR_LOG, MAKELPARAM(0, 0));
+				SendMessage(hToolBar, TB_CHANGEBITMAP, ID_TOOL_ERROR_LOG, 6);
 				CTrayCtl.SetTrayIcon(IDI_ICON_TEXT_CS_YELLOW, "ConnectServer Error");
 			}
-
-			//++g_nICON_IMAGEID;
-
+			++g_nICON_IMAGEID;
 			return TRUE;
 		}
 
@@ -517,12 +509,10 @@ INT_PTR CALLBACK MainDlgProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
 		case 7:
 		{
 			MC_SEND_ConnectServerInfo();
-
 			if (MakeCcsShareInfoBuffer())
 			{
 				MC_SEND_CcsShareInfo();
 			}
-
 			CFileServerInfoMake_CCS();
 
 			return TRUE;
@@ -531,14 +521,11 @@ INT_PTR CALLBACK MainDlgProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
 		case 8:
 		{
 			IpSelectDlg_ClearListView();
-
 			if (!g_bMultiCastOn)
 			{
 				return TRUE;
 			}
-
 			MC_ShowConnectServerList();
-
 			return TRUE;
 		}
 		}
@@ -617,6 +604,22 @@ INT_PTR CALLBACK ReloadDataDlgProc(HWND hWndDlg, UINT uMsg, WPARAM wParam, LPARA
 }
 
 // =========================================================================
+// Error Log Alarm Functions
+// =========================================================================
+void StartErrorLogAlarm()
+{
+	g_nICON_IMAGEID = 0;
+	SetTimer(hMainDlg, 1, 1000, NULL);  // 1 second blink
+}
+
+void EndErrorLogAlarm()
+{
+	KillTimer(hMainDlg, 1);
+	SendMessageA(hToolBar, TB_CHECKBUTTON, ID_TOOL_ERROR_LOG, MAKELPARAM(0, 0));
+	CTrayCtl.SetTrayIcon(IDI_ICON_STATE_ONLINE, "Connect Server OK.");
+}
+
+// =========================================================================
 // ErrorLogDlgProc - Error Log Display Dialog
 // =========================================================================
 INT_PTR CALLBACK ErrorLogDlgProc(HWND hWndDlg, UINT uMsg, WPARAM wParam, LPARAM lParam)
@@ -686,22 +689,6 @@ INT_PTR CALLBACK ErrorLogDlgProc(HWND hWndDlg, UINT uMsg, WPARAM wParam, LPARAM 
 }
 
 // =========================================================================
-// Error Log Alarm Functions
-// =========================================================================
-void StartErrorLogAlarm()
-{
-	g_nICON_IMAGEID = 0;
-	SetTimer(hMainDlg, 1, 1000, NULL);  // 1 second blink
-}
-
-void EndErrorLogAlarm()
-{
-	KillTimer(hMainDlg, 1);
-	SendMessageA(hToolBar, TB_CHECKBUTTON, ID_TOOL_ERROR_LOG, MAKELPARAM(0, 0));
-	CTrayCtl.SetTrayIcon(IDI_ICON_STATE_ONLINE, "Connect Server OK.");
-}
-
-// =========================================================================
 // AboutDlgProc - About Dialog Window Procedure
 // =========================================================================
 INT_PTR CALLBACK AboutDlgProc(HWND hWndDlg, UINT uMsg, WPARAM wParam, LPARAM lParam)
@@ -738,7 +725,7 @@ INT_PTR CALLBACK AboutDlgProc(HWND hWndDlg, UINT uMsg, WPARAM wParam, LPARAM lPa
 		HDC hDC = BeginPaint(hWndDlg, &ps);
 		HDC hMemDC = CreateCompatibleDC(hDC);
 
-		HBITMAP hBmp = LoadBitmapA(g_hInst, MAKEINTRESOURCEA(140));
+		HBITMAP hBmp = LoadBitmapA(g_hInst, MAKEINTRESOURCEA(IDB_BITMAP_WEBZEN_LOGO));
 		if (hBmp)
 		{
 			HBITMAP hOldBmp = (HBITMAP)SelectObject(hMemDC, hBmp);
@@ -825,11 +812,6 @@ LABEL_SET_DEFAULT:
 // =========================================================================
 INT_PTR CALLBACK McIpSelectDlgProc(HWND hDlg, UINT uMsg, WPARAM wParam, LPARAM lParam)
 {
-	static const char* aAreYouSureToEn = "Are You Sure to End MultiCast Group?";
-	static const char* aAskEndMulticas = "Ask End Multicast";
-	static const char* aPleaseChooseIp = "Please choose an IP address.";
-	static const char* aAskStartMultic = "Ask Start Multicast";
-
 	switch (uMsg)
 	{
 	case WM_INITDIALOG:
@@ -841,13 +823,16 @@ INT_PTR CALLBACK McIpSelectDlgProc(HWND hDlg, UINT uMsg, WPARAM wParam, LPARAM l
 
 		// Populate local IP list (IDC_LIST_LOCAL_IP = 1009)
 		int nCount = g_CsInfoMultiCast.DoEnumIpAddress();
-		for (int i = 0; i < nCount; ++i)
+		if (nCount > 0)
 		{
-			char szIP[32] = { 0 };
-			if (g_CsInfoMultiCast.GetEnummedIpAddress(i, szIP))
+			for (int i = 0; i < nCount; ++i)
 			{
-				HWND hList = GetDlgItem(hDlg, IDC_LIST_LOCAL_IP);
-				SendMessageA(hList, LB_ADDSTRING, 0, (LPARAM)szIP);
+				char szIP[32] = { 0 };
+				if (g_CsInfoMultiCast.GetEnummedIpAddress(i, szIP))
+				{
+					HWND hList = GetDlgItem(hDlg, IDC_LIST_LOCAL_IP);
+					SendMessageA(hList, LB_ADDSTRING, 0, (LPARAM)szIP);
+				}
 			}
 		}
 
@@ -870,54 +855,58 @@ INT_PTR CALLBACK McIpSelectDlgProc(HWND hDlg, UINT uMsg, WPARAM wParam, LPARAM l
 	}
 
 	case WM_CLOSE:
+	{
 		hMcIpSelectDlg = NULL;
 		DestroyWindow(hDlg);
 		return TRUE;
+	}
 
 	case WM_COMMAND:
+	{
 		switch (LOWORD(wParam))
 		{
 		case IDC_BTN_START_MULTICAST:  // 1010
 		{
 			HWND hList = GetDlgItem(hDlg, IDC_LIST_LOCAL_IP);
-			int nSel = (int)SendMessageA(hList, LB_GETCURSEL, 0, 0);
+			LRESULT nSel = SendMessageA(hList, LB_GETCURSEL, 0, 0);
+
 			if (nSel == LB_ERR)
 			{
-				MessageBoxA(hDlg, aPleaseChooseIp, "ERROR", MB_ICONERROR | MB_OK);
+				MessageBoxA(hDlg, "Please Choose IP to Join MultiCast Group First.", "ERROR", MB_ICONERROR | MB_OK);
 				return TRUE;
 			}
 
 			// Get selected IP
-			char szIP[32] = { 0 };
-			SendMessageA(hList, LB_GETTEXT, nSel, (LPARAM)szIP);
+			SendMessageA(hList, LB_GETTEXT, (WPARAM)nSel, (LPARAM)g_szMC_IPADDR);
 
 			// Confirm with user
 			char szConfirm[256];
-			_snprintf(szConfirm, sizeof(szConfirm), "Are You Sure to Use IP Address '%s' to Join MultiCast Group?", szIP);
+			wsprintfA(szConfirm, "Are You Sure to Use IP Address '%s' to Join MultiCast Group ?", g_szMC_IPADDR);
 
-			if (MessageBoxA(hDlg, szConfirm, aAskStartMultic, MB_YESNO | MB_ICONQUESTION) != IDYES)
+			if (MessageBoxA(hDlg, szConfirm, "Ask Start MultiCasting", MB_YESNO | MB_ICONQUESTION) != IDYES)
 				return TRUE;
 
 			// Start multicast
-			if (!g_CsInfoMultiCast.StartMultiCast(szIP))
+			if (!g_CsInfoMultiCast.StartMultiCast(g_szMC_IPADDR))
 				return TRUE;
 
-			g_LogProc.LogAddFuncColor(LOG_COLOR_GREEN, "Starting Connect Server Information MultiCast. IP:%s", szIP);
+			g_LogProc.LogAddFuncColor(3, "Starting Connect Server Information MultiCast. IP:%s", g_szMC_IPADDR);
 
 			hMcIpSelectDlg = NULL;
 			g_bDoMultiCast = TRUE;
 			g_bMultiCastOn = TRUE;
 			g_bMULTICAST_LIST_REMAKE = TRUE;
 
-			// Update toolbar button state
-			SendMessageA(hToolBar, TB_CHECKBUTTON, ID_TOOL_MULTICAST, MAKELPARAM(1, 0));
+			// Update toolbar button - USE TB_CHANGEBITMAP with bitmap index 9
+			SendMessageA(hToolBar, TB_CHANGEBITMAP, ID_TOOL_MULTICAST, 9);
+
+			DestroyWindow(hDlg);
 		}
-		DestroyWindow(hDlg);
 		return TRUE;
 
 		case IDC_BTN_END_MULTICAST:  // 1011
 		{
-			if (MessageBoxA(hDlg, aAreYouSureToEn, aAskEndMulticas, MB_YESNO | MB_ICONQUESTION) != IDYES)
+			if (MessageBoxA(hDlg, "Are You Sure to End CS Info MultiCasting ?", "Ask End MultiCasting", MB_YESNO | MB_ICONQUESTION) != IDYES)
 				return TRUE;
 
 			hMcIpSelectDlg = NULL;
@@ -926,18 +915,22 @@ INT_PTR CALLBACK McIpSelectDlgProc(HWND hDlg, UINT uMsg, WPARAM wParam, LPARAM l
 
 			g_CsInfoMultiCast.EndMultiCast();
 
-			// Update toolbar button state
-			SendMessageA(hToolBar, TB_CHECKBUTTON, ID_TOOL_MULTICAST, MAKELPARAM(0, 0));
+			// Update toolbar button - USE TB_CHANGEBITMAP with bitmap index 5
+			SendMessageA(hToolBar, TB_CHANGEBITMAP, ID_TOOL_MULTICAST, 5);
+
+			DestroyWindow(hDlg);
 		}
-		DestroyWindow(hDlg);
 		return TRUE;
 
-		case IDCANCEL:
-			hMcIpSelectDlg = NULL;
+		case IDCANCEL:  // 2
+		{
+			// Original does NOT set hMcIpSelectDlg = NULL here!
 			DestroyWindow(hDlg);
 			return TRUE;
 		}
+		}
 		return TRUE;
+	}
 	}
 
 	return FALSE;
@@ -948,42 +941,50 @@ INT_PTR CALLBACK McIpSelectDlgProc(HWND hDlg, UINT uMsg, WPARAM wParam, LPARAM l
 // =========================================================================
 INT_PTR CALLBACK PbIpSelectDlgProc(HWND hDlg, UINT uMsg, WPARAM wParam, LPARAM lParam)
 {
+	char szIP[32] = { 0 };
+
 	switch (uMsg)
 	{
 	case WM_INITDIALOG:
 	{
 		hPbIpSelectDlg = hDlg;
 
-		// Initialize ListView (same as multicast dialog)
+		// Initialize ListView
 		IpSelectDlg_InitListViewCtrl();
 
 		// Populate IP list (IDC_LIST_PUBLIC_IP = 1015)
 		int nCount = g_CsInfoMultiCast.DoEnumIpAddress();
-		for (int i = 0; i < nCount; ++i)
+		if (nCount > 0)
 		{
-			char szIP[32] = { 0 };
-			if (g_CsInfoMultiCast.GetEnummedIpAddress(i, szIP))
+			for (int i = 0; i < nCount; ++i)
 			{
-				HWND hList = GetDlgItem(hDlg, IDC_LIST_PUBLIC_IP);
-				SendMessageA(hList, LB_ADDSTRING, 0, (LPARAM)szIP);
+				if (g_CsInfoMultiCast.GetEnummedIpAddress(i, szIP))
+				{
+					HWND hList = GetDlgItem(hDlg, IDC_LIST_PUBLIC_IP);
+					SendMessageA(hList, LB_ADDSTRING, 0, (LPARAM)szIP);
+				}
 			}
 		}
 
 		return TRUE;
 	}
 
-	case WM_CLOSE:
+	case WM_CLOSE:  // 16
+	{
 		hPbIpSelectDlg = NULL;
 		DestroyWindow(hDlg);
 		return TRUE;
+	}
 
 	case WM_COMMAND:
+	{
 		switch (LOWORD(wParam))
 		{
 		case IDC_BTN_SELECT_IP:  // 1016
 		{
 			HWND hList = GetDlgItem(hDlg, IDC_LIST_PUBLIC_IP);
-			int nSel = (int)SendMessageA(hList, LB_GETCURSEL, 0, 0);
+			LRESULT nSel = SendMessageA(hList, LB_GETCURSEL, 0, 0);
+
 			if (nSel == LB_ERR)
 			{
 				MessageBoxA(hDlg, "Please Choose IP to Set as Public IP Address", "ERROR", MB_ICONERROR | MB_OK);
@@ -991,37 +992,46 @@ INT_PTR CALLBACK PbIpSelectDlgProc(HWND hDlg, UINT uMsg, WPARAM wParam, LPARAM l
 			}
 
 			// Get selected IP
-			char szIP[32] = { 0 };
-			SendMessageA(hList, LB_GETTEXT, nSel, (LPARAM)szIP);
+			char szSelectedIP[32] = { 0 };
+			SendMessageA(hList, LB_GETTEXT, (WPARAM)nSel, (LPARAM)szSelectedIP);
 
 			// Confirm with user
 			char szConfirm[256];
-			_snprintf(szConfirm, sizeof(szConfirm),
-				"Are You Sure to Use IP Address '%s' as Public IP of CS?", szIP);
+			wsprintfA(szConfirm, "Are You Sure to Use IP Address '%s' to Public IP of CS ?", szSelectedIP);
 
-			if (MessageBoxA(hDlg, szConfirm, "Ask Setting Public IP Address Info", MB_YESNO | MB_ICONQUESTION) != IDYES)
-				return TRUE;
+			if (MessageBoxA(hDlg, szConfirm, "Ask Setting Public IP Address Info", MB_YESNO | MB_ICONQUESTION) == IDYES)
+			{
+				// Copy exactly 32 bytes (matching qmemcpy)
+				memcpy(g_szPB_IPADDR, szSelectedIP, 0x20);
 
-			// Set as public IP
-			strncpy(g_szPB_IPADDR, szIP, sizeof(g_szPB_IPADDR) - 1);
-			g_szPB_IPADDR[sizeof(g_szPB_IPADDR) - 1] = '\0';
+				// Update main dialog display
+				if (hMainDlg)
+					SetDlgItemTextA(hMainDlg, IDC_CHECK_PUBLIC_IP, g_szPB_IPADDR);
 
-			// Update main dialog display
-			if (hMainDlg)
-				SetDlgItemTextA(hMainDlg, IDC_EDIT_PUBLIC_IP, g_szPB_IPADDR);
+				hPbIpSelectDlg = NULL;
+				DestroyWindow(hDlg);
+			}
+			// If user clicked No, window stays open - do nothing
 
-			hPbIpSelectDlg = NULL;
+			return TRUE;
 		}
-		DestroyWindow(hDlg);
-		return TRUE;
 
 		case IDC_BTN_CANCEL_IP:  // 1017
-		case IDCANCEL:
+		{
 			hPbIpSelectDlg = NULL;
 			DestroyWindow(hDlg);
 			return TRUE;
 		}
+
+		case IDCANCEL:  // 2
+		{
+			// Does NOT set hPbIpSelectDlg = NULL!
+			DestroyWindow(hDlg);
+			return TRUE;
+		}
+		}
 		return TRUE;
+	}
 	}
 
 	return FALSE;
@@ -1032,53 +1042,71 @@ INT_PTR CALLBACK PbIpSelectDlgProc(HWND hDlg, UINT uMsg, WPARAM wParam, LPARAM l
 // =========================================================================
 void IpSelectDlg_InitListViewCtrl()
 {
+	// Reset item counter
+	g_iLV_ItemNo = 0;
+
 	// ListView control ID: IDC_LIST_CS_INFO = 1013
 	HWND hList = GetDlgItem(hMcIpSelectDlg, IDC_LIST_CS_INFO);
 	if (!hList) return;
 
-	// Set extended styles: grid lines, full-row select
-	DWORD dwExStyle = ListView_GetExtendedListViewStyle(hList);
-	ListView_SetExtendedListViewStyle(hList, dwExStyle | LVS_EX_GRIDLINES | LVS_EX_FULLROWSELECT);
+	// Set extended styles: full-row select only (NOT grid lines!)
+	LRESULT dwExStyle = SendMessageA(hList, LVM_GETEXTENDEDLISTVIEWSTYLE, 0, 0);
+	dwExStyle |= LVS_EX_FULLROWSELECT;
+	SendMessageA(hList, LVM_SETEXTENDEDLISTVIEWSTYLE, 0, dwExStyle);
 
 	// Add columns (LVM_INSERTCOLUMN = 0x101B)
-	LV_COLUMN lvc = { 0 };
-	lvc.mask = LVCF_TEXT | LVCF_WIDTH | LVCF_SUBITEM;
+	LV_COLUMNA lvc = { 0 };
+	lvc.mask = LVCF_TEXT | LVCF_WIDTH | LVCF_SUBITEM | LVCF_FMT;  // 0x0F
+	lvc.fmt = LVCFMT_LEFT;  // 0
 
 	// Column 0: CS Multicast IP (120px)
 	lvc.pszText = "CS Multicast IP";
 	lvc.cx = 120;
 	lvc.iSubItem = 0;
-	ListView_InsertColumn(hList, 0, &lvc);
+	SendMessageA(hList, LVM_INSERTCOLUMNA, 0, (LPARAM)&lvc);
 
 	// Column 1: CS Public IP (120px)
 	lvc.pszText = "CS Public IP";
 	lvc.cx = 120;
 	lvc.iSubItem = 1;
-	ListView_InsertColumn(hList, 1, &lvc);
+	SendMessageA(hList, LVM_INSERTCOLUMNA, 1, (LPARAM)&lvc);
 
 	// Column 2: Current Connect (150px)
 	lvc.pszText = "Current Connect";
 	lvc.cx = 150;
 	lvc.iSubItem = 2;
-	ListView_InsertColumn(hList, 2, &lvc);
+	SendMessageA(hList, LVM_INSERTCOLUMNA, 2, (LPARAM)&lvc);
 
 	// Column 3: CPU Usage (120px)
 	lvc.pszText = "CPU Usage";
 	lvc.cx = 120;
 	lvc.iSubItem = 3;
-	ListView_InsertColumn(hList, 3, &lvc);
+	SendMessageA(hList, LVM_INSERTCOLUMNA, 3, (LPARAM)&lvc);
 
 	// Column 4: Mem Usage (120px)
 	lvc.pszText = "Mem Usage";
 	lvc.cx = 120;
 	lvc.iSubItem = 4;
-	ListView_InsertColumn(hList, 4, &lvc);
+	SendMessageA(hList, LVM_INSERTCOLUMNA, 4, (LPARAM)&lvc);
 
-	// Set column headers to be clickable (for sorting)
-	// LVM_SETCOLUMNORDERARRAY = 0x1036, LVM_GETCOLUMNORDERARRAY = 0x1037
-	int nCols = 5;
-	int order[] = { 0, 1, 2, 3, 4 };
-	ListView_SetColumnOrderArray(hList, nCols, order);
+	// Additional messages from original (purpose unclear, but present)
+	// These might be setting default item or preparing for item insertion
+	LV_ITEMA lvi = { 0 };
+	lvi.mask = LVIF_TEXT;
+	lvi.pszText = "";
+	lvi.iItem = 4;  // wParam from last column
+	SendMessageA(hList, LVM_SETITEMA, (WPARAM)4, (LPARAM)&lvi);
+	SendMessageA(hList, LVM_SETITEMTEXTA, (WPARAM)4, (LPARAM)&lvi);
+
+	// Get and set column order array
+	int nOrderArray[32] = { 0 };  // Buffer for column order
+	SendMessageA(hList, LVM_GETCOLUMNORDERARRAY, 0, (LPARAM)nOrderArray);
+
+	// Modify the order (original ORs with 0x20 on the LOBYTE of return value)
+	// This is likely setting a flag or modifying the column order
+	LRESULT lResult = SendMessageA(hList, LVM_GETCOLUMNORDERARRAY, 0, 0);
+	lResult |= 0x20;
+	SendMessageA(hList, LVM_SETCOLUMNORDERARRAY, 0, lResult);
 }
 
 // =========================================================================
@@ -1086,44 +1114,52 @@ void IpSelectDlg_InitListViewCtrl()
 // =========================================================================
 void IpSelectDlg_InsertListViewCtrl(in_addr addrMulticast, in_addr addrPublic, int nConnectCount, int nCPU, int nMem)
 {
-
 	HWND hList = GetDlgItem(hMcIpSelectDlg, IDC_LIST_CS_INFO);
 	if (!hList) return;
 
-	// Convert IPs to strings
-	char szMulticast[32], szPublic[32];
+	// Convert IPs to strings using strcpy (not strncpy)
+	char szMulticast[32] = { 0 };
+	char szPublic[32] = { 0 };
+
 	char* pMulti = inet_ntoa(addrMulticast);
+	strcpy(szMulticast, pMulti ? pMulti : "N/A");
+
 	char* pPublic = inet_ntoa(addrPublic);
+	strcpy(szPublic, pPublic ? pPublic : "N/A");
 
-	strncpy(szMulticast, pMulti ? pMulti : "N/A", sizeof(szMulticast) - 1);
-	strncpy(szPublic, pPublic ? pPublic : "N/A", sizeof(szPublic) - 1);
-
-	// Insert item (LVM_INSERTITEM = 0x1007)
-	LV_ITEM lvi = { 0 };
+	// Setup LV_ITEM for insertion
+	LV_ITEMA lvi = { 0 };
 	lvi.mask = LVIF_TEXT;
 	lvi.iItem = g_iLV_ItemNo;
 	lvi.iSubItem = 0;
 	lvi.pszText = szMulticast;
-	int nItem = ListView_InsertItem(hList, &lvi);
 
-	// Set subitems (LVM_SETITEMTEXT = 0x1006)
+	// Insert the item
+	SendMessageA(hList, LVM_INSERTITEMA, 0, (LPARAM)&lvi);
+
+	// SubItem 1: Public IP
+	lvi.iSubItem = 1;
+	lvi.pszText = szPublic;
+	SendMessageA(hList, LVM_SETITEMTEXTA, g_iLV_ItemNo, (LPARAM)&lvi);
+
+	// SubItem 2: Connect Count (no units, just number)
 	char szBuf[32];
+	wsprintfA(szBuf, "%d", nConnectCount);
+	lvi.iSubItem = 2;
+	lvi.pszText = szBuf;
+	SendMessageA(hList, LVM_SETITEMTEXTA, g_iLV_ItemNo, (LPARAM)&lvi);
 
-	// Subitem 1: Public IP
-	_snprintf(szBuf, sizeof(szBuf), "%s", szPublic);
-	ListView_SetItemText(hList, nItem, 1, szBuf);
+	// SubItem 3: CPU Usage (no % sign)
+	wsprintfA(szBuf, "%d", nCPU);
+	lvi.iSubItem = 3;
+	lvi.pszText = szBuf;
+	SendMessageA(hList, LVM_SETITEMTEXTA, g_iLV_ItemNo, (LPARAM)&lvi);
 
-	// Subitem 2: Connect Count
-	_snprintf(szBuf, sizeof(szBuf), "%d", nConnectCount);
-	ListView_SetItemText(hList, nItem, 2, szBuf);
-
-	// Subitem 3: CPU Usage
-	_snprintf(szBuf, sizeof(szBuf), "%d%%", nCPU);
-	ListView_SetItemText(hList, nItem, 3, szBuf);
-
-	// Subitem 4: Memory Usage
-	_snprintf(szBuf, sizeof(szBuf), "%dMB", nMem);
-	ListView_SetItemText(hList, nItem, 4, szBuf);
+	// SubItem 4: Memory Usage (no MB)
+	wsprintfA(szBuf, "%d", nMem);
+	lvi.iSubItem = 4;
+	lvi.pszText = szBuf;
+	SendMessageA(hList, LVM_SETITEMTEXTA, g_iLV_ItemNo, (LPARAM)&lvi);
 
 	++g_iLV_ItemNo;
 }
@@ -1150,7 +1186,7 @@ BOOL MakeCcsShareInfoBuffer()
 
 	int shareCount = 0;
 
-	PMSG_CCS_INFOLIST* lpEntry = &g_CCSInfoShare.Entry[0];
+	PMSG_CCS_INFOLIST* lpEntry = &g_cCCS_INFOSHARE_BUF.Entry[0];
 
 	GameServerList_Struct* lpServer = GameServerList;
 
@@ -1161,7 +1197,7 @@ BOOL MakeCcsShareInfoBuffer()
 			lpEntry->ServerCode = lpServer->ServerCode;
 			lpEntry->ServerType = lpServer->ServerType;
 			lpEntry->MaxUserCount = lpServer->MaxUserCount;
-			lpEntry->FreeUserSlots = lpServer->MaxUserCount - lpServer->UserCount;
+			lpEntry->PCbangCount = lpServer->MaxUserCount - lpServer->UserCount;
 			lpEntry->UserCount = lpServer->UserCount;
 			lpEntry->ServerFlag = lpServer->ServerFlag;
 
@@ -1172,13 +1208,13 @@ BOOL MakeCcsShareInfoBuffer()
 		++lpServer;
 	}
 
-	g_CCSInfoShare.JoinServerCount = g_JoinServerRecvQCount;
-	g_CCSInfoShare.ShareCount = shareCount;
+	g_cCCS_INFOSHARE_BUF.JoinServerCount = g_JoinServerRecvQCount;
+	g_cCCS_INFOSHARE_BUF.ShareCount = shareCount;
 
-	g_CCSInfoShare.c = 0xC2;
-	g_CCSInfoShare.sizeH = ((shareCount + 1) * 16) >> 8;
-	g_CCSInfoShare.sizeL = ((shareCount + 1) * 16) & 0xFF;
-	g_CCSInfoShare.head = 0x03;
+	g_cCCS_INFOSHARE_BUF.c		= PMHC_WORD;
+	g_cCCS_INFOSHARE_BUF.sizeH	= SET_NUMBERH(shareCount);
+	g_cCCS_INFOSHARE_BUF.sizeL	= SET_NUMBERL(shareCount);
+	g_cCCS_INFOSHARE_BUF.head	= 0x03;
 
 	LeaveCriticalSection(&gameservercriti);
 
@@ -1191,20 +1227,20 @@ BOOL MakeCcsShareInfoBuffer()
 void InitDlgControls(HWND hWnd)
 {
 	// Load toolbar bitmap (0x7A = 122)
-	LoadBitmapA(g_hInst, MAKEINTRESOURCEA(IDB_BITMAP_TOOLBAR));
+	LoadBitmapA(g_hInst, MAKEINTRESOURCEA(0x7A));
 
-	// Create toolbar: style 0x50000921, ID 0x1F40 (8000), 11 buttons
+	// Create toolbar
 	TBBUTTON Buttons = { 0 };
 	hToolBar = CreateToolbarEx(hWnd,
 		WS_CHILD | WS_VISIBLE | TBSTYLE_FLAT | TBSTYLE_TOOLTIPS | CCS_TOP | CCS_NODIVIDER,
-		IDC_TOOLBAR_MAIN,              // IDC_TOOLBAR_MAIN = 8000
-		11,                  // 11 buttons
+		0x1F40,              // Toolbar ID = 8000
+		11,                  // Max buttons
 		g_hInst,
 		IDB_BITMAP_TOOLBAR,                // Bitmap resource ID
 		&Buttons,            // Button array
-		0,                   // Button count (filled manually)
+		0,                   // Initial button count = 0
 		32, 32, 32, 32,     // Button sizes
-		sizeof(TBBUTTON));   // Structure size
+		sizeof(TBBUTTON));
 
 	if (hToolBar)
 	{
@@ -1227,7 +1263,7 @@ void InitDlgControls(HWND hWnd)
 				// Regular button
 				Buttons.iBitmap = nBitmapIdx;
 				Buttons.fsStyle = TBSTYLE_BUTTON;
-				Buttons.idCommand = nBitmapIdx + ID_TOOL_REFRESH;  // ID_TOOL_REFRESH = 8001, etc.
+				Buttons.idCommand = nBitmapIdx + ID_TOOL_REFRESH;  // Start from 8001
 				++nBitmapIdx;
 			}
 
@@ -1238,31 +1274,31 @@ void InitDlgControls(HWND hWnd)
 	// Auto-size toolbar
 	SendMessageA(hToolBar, TB_AUTOSIZE, 0, 0);
 
-	// Set multicast button state (ID 0x1F46 = 8006) to unchecked
+	// Set multicast button state to unchecked (lParam = 0, not MAKELPARAM)
 	HWND hDlgItem = GetDlgItem(hMainDlg, 8000);
-	SendMessageA(hDlgItem, TB_CHECKBUTTON, 0x1F46, MAKELPARAM(FALSE, 0));
+	SendMessageA(hDlgItem, TB_CHECKBUTTON, IDC_CHECK_PUBLIC_IP, 0);  // Just 0, not MAKELPARAM
 
-	// Disable Public IP edit field (IDC_EDIT_PUBLIC_IP = 1014)
-	HWND hEdit = GetDlgItem(hMainDlg, 1014);
+	// Disable Public IP edit field (IDC_CHECK_PUBLIC_IP = 1014)
+	HWND hEdit = GetDlgItem(hMainDlg, IDC_CHECK_PUBLIC_IP);
 	EnableWindow(hEdit, FALSE);
 
-	// Update window title
+	// Update window title with hardcoded version string
 	char szTitle[256];
 	GetWindowTextA(hWnd, szTitle, sizeof(szTitle));
 
 	SYSTEMTIME st;
 	GetLocalTime(&st);
 
-	char szFullTitle[512];
-	wsprintfA(szFullTitle,
+	// Use wsprintfA directly on szTitle (overwrites it)
+	wsprintfA(szTitle,
 		"%s (Version : %s, Start Date : %d-%d-%d %02d:%02d:%02d.%03d)",
 		szTitle,
-		CONNECT_SERVER_VERSION,
+		CONNECT_SERVER_VERSION, 
 		st.wYear, st.wMonth, st.wDay,
 		st.wHour, st.wMinute, st.wSecond,
 		st.wMilliseconds);
 
-	SetWindowTextA(hWnd, szFullTitle);
+	SetWindowTextA(hWnd, szTitle);
 
 	// Set window icon (0x67 = 103)
 	HICON hIcon = LoadIconA(g_hInst, MAKEINTRESOURCEA(IDI_ICON_APP_MAIN));
@@ -1343,10 +1379,6 @@ void ReadConnServerList()
 int ReadServerInfo()
 {
 	static const char* FileName = "Data\\ServerInfo.dat";
-	static const char* AppName = "ConnectServer";
-	static const char* KeyName = "Default";
-	static const char* Default = "";
-	static const char* control = ".";  // Delimiter for version parsing
 
 	// Check if config file exists
 	if (_access(FileName, 0) != 0)
@@ -1357,19 +1389,19 @@ int ReadServerInfo()
 	ClientTEST_V1 = ClientTEST_V2 = ClientTEST_V3 = 0;
 
 	// FTP Server Settings
-	GetPrivateProfileString(AppName, "FtpServer", Default, FtpServerIpAddress, sizeof(FtpServerIpAddress), FileName);
-	FtpServerPort = GetPrivateProfileInt(AppName, "Port", 21, FileName);
-	GetPrivateProfileString(AppName, "Id", "", FtpServerID, sizeof(FtpServerID), FileName);
-	GetPrivateProfileString(AppName, "Pass", "", FtpServerPass, sizeof(FtpServerPass), FileName);
+	GetPrivateProfileString("FtpServerInfo", "FtpServer", "none", FtpServerIpAddress, sizeof(FtpServerIpAddress), FileName);
+	FtpServerPort = GetPrivateProfileInt("FtpServerInfo", "Port", 21, FileName);
+	GetPrivateProfileString("FtpServerInfo", "Id", "", FtpServerID, sizeof(FtpServerID), FileName);
+	GetPrivateProfileString("FtpServerInfo", "Pass", "", FtpServerPass, sizeof(FtpServerPass), FileName);
 
 	// Local Test FTP Settings
-	GetPrivateProfileString("FtpServerInfo_LocalTest", "FtpServer", Default, FtpServerIpAddress_LocalTest, sizeof(FtpServerIpAddress_LocalTest), FileName);
+	GetPrivateProfileString("FtpServerInfo_LocalTest", "FtpServer", "", FtpServerIpAddress_LocalTest, sizeof(FtpServerIpAddress_LocalTest), FileName);
 	FtpServerPort_LocalTest = GetPrivateProfileInt("FtpServerInfo_LocalTest", "Port", 21, FileName);
 	GetPrivateProfileString("FtpServerInfo_LocalTest", "Id", "", FtpServerID_LocalTest, sizeof(FtpServerID_LocalTest), FileName);
 	GetPrivateProfileString("FtpServerInfo_LocalTest", "Pass", "", FtpServerPass_LocalTest, sizeof(FtpServerPass_LocalTest), FileName);
 
 	// HTTP Server Settings
-	GetPrivateProfileStringA("HttpServerInfo", "HttpAddress", Default, HTTPServerIpAddress, sizeof(HTTPServerIpAddress), FileName);
+	GetPrivateProfileStringA("HttpServerInfo", "HttpAddress", "", HTTPServerIpAddress, sizeof(HTTPServerIpAddress), FileName);
 	HTTPServerPort = GetPrivateProfileInt("HttpServerInfo", "Port", 80, FileName);
 	GetPrivateProfileString("HttpServerInfo", "Id", "", HTTPServerID, sizeof(HTTPServerID), FileName);
 	GetPrivateProfileString("HttpServerInfo", "Pass", "", HTTPServerPass, sizeof(HTTPServerPass), FileName);
@@ -1377,12 +1409,12 @@ int ReadServerInfo()
 	// Game Server Info
 	GetPrivateProfileString("GameServerInfo", "VersionFileName", "Version.wvd", FtpServerFileName, sizeof(FtpServerFileName), FileName);
 	GetPrivateProfileString("GameServerInfo", "VersionFileName", "Version.wvd", HTTPServerFileName, sizeof(HTTPServerFileName), FileName);
-	GetPrivateProfileString("GameServerInfo", "ClientVersion", "0.0.0", ClientVersion, sizeof(ClientVersion), FileName);
+	GetPrivateProfileString("GameServerInfo", "ClientVersion", "00.00.00", ClientVersion, sizeof(ClientVersion), FileName);
 
-	g_LogProc.LogAddFunc("Client Version: %s", ClientVersion);
+	g_LogProc.LogAddFunc("Client Version : %s", ClientVersion);
 
 	// Test client version (default to 0.0.0)
-	strncpy(ClientVersion_TEST, "0.0.0", sizeof(ClientVersion_TEST));
+	strcpy(ClientVersion_TEST, "00.00.00");
 
 	// Local Connect Only setting
 	g_bLocalNetworkConnectOnly = GetPrivateProfileInt("LocalNetworkConnect", "LocalConnectOnly", 0, FileName);
@@ -1393,9 +1425,9 @@ int ReadServerInfo()
 		//SendMessageA(hToolBar, TB_CHECKBUTTON, ID_TOOL_LOCAL_ONLY,  MAKELPARAM(g_bLocalNetworkConnectOnly, 0));
 
 		if (g_bLocalNetworkConnectOnly)
-			SendMessageA(hToolBar, 0x42B, 0x1F44, 8);   // Checked state
+			SendMessageA(hToolBar, TB_CHANGEBITMAP, 0x1F44, 8);   // Checked state
 		else
-			SendMessageA(hToolBar, 0x42B, 0x1F44, 3);   // Unchecked state
+			SendMessageA(hToolBar, TB_CHANGEBITMAP, 0x1F44, 3);   // Unchecked state
 	}
 
 	// Download type (0 = FTP, 1 = HTTP)
@@ -1405,22 +1437,22 @@ int ReadServerInfo()
 	char szTemp[32];
 	strncpy(szTemp, ClientVersion, sizeof(szTemp));
 
-	char* token = strtok(szTemp, control);
+	char* token = strtok(szTemp, ".");
 	ClientV1 = token ? atoi(token) : 0;
 
-	token = strtok(NULL, control);
+	token = strtok(NULL, ".");
 	ClientV2 = token ? atoi(token) : 0;
 
-	token = strtok(NULL, control);
+	token = strtok(NULL, ".");
 	ClientV3 = token ? atoi(token) : 0;
 
 	// Parse test version similarly
 	strncpy(szTemp, ClientVersion_TEST, sizeof(szTemp));
-	token = strtok(szTemp, control);
+	token = strtok(szTemp, ".");
 	ClientTEST_V1 = token ? atoi(token) : 0;
-	token = strtok(NULL, control);
+	token = strtok(NULL, ".");
 	ClientTEST_V2 = token ? atoi(token) : 0;
-	token = strtok(NULL, control);
+	token = strtok(NULL, ".");
 	ClientTEST_V3 = token ? atoi(token) : 0;
 
 	g_LogProc.LogAddFunc("Patch Server Info Loaded");
@@ -1591,6 +1623,7 @@ void ReadServerList()
 // =========================================================================
 // GameServerInfoUpdate - Update Server Info from Heartbeat
 // =========================================================================
+//GameServerInfoUpdate(lpMsg->ServerCode, lpMsg->Percent, lpMsg->UserCount, 0, 0, lpMsg->MaxUserCount);
 void GameServerInfoUpdate(int servercode, BYTE percent, WORD maxuser, WORD usercount, WORD freeusers, WORD serverflag)
 {
 	EnterCriticalSection(&gameservercriti);
@@ -1603,7 +1636,7 @@ void GameServerInfoUpdate(int servercode, BYTE percent, WORD maxuser, WORD userc
 			GameServerList[n].LiveTime = GetTickCount();
 
 			GameServerList[n].MaxUserCount = maxuser;
-			GameServerList[n].FreeUserSlots = maxuser - freeusers;
+			GameServerList[n].PCbangCount = maxuser - freeusers;
 			GameServerList[n].UserCount = freeusers;
 
 			GameServerList[n].ServerFlag = serverflag;
@@ -1654,7 +1687,7 @@ void GameServerInfoTimeCheck()
 				GameServerList[n].ServerType = 0;
 				memset(GameServerList[n].ServerVersion, 0, sizeof(GameServerList[n].ServerVersion));
 				memset(GameServerList[n].ClientVersion, 0, sizeof(GameServerList[n].ClientVersion));
-				g_bGameServerLive = 0;
+				g_bGameServerLive = FALSE;
 			}
 		}
 	}
@@ -1692,7 +1725,6 @@ void CheckReloadServerListKey()
 // =========================================================================
 // Background Thread for Server Monitoring
 // =========================================================================
-//BOOL CALLBACK MainThreadProc(LPARAM* pParam)
 DWORD CALLBACK LoopThread(LPVOID lpParam)
 {
 	GetTickCount();  // Original: dummy call, possibly for timing init
@@ -1710,8 +1742,11 @@ DWORD CALLBACK LoopThread(LPVOID lpParam)
 void GameServerLoop()
 {
 	g_bDoTerminateLoopThread = FALSE;
-	DWORD threadId;
-	LoopThreadHandle = CreateThread(NULL, 0, LoopThread, NULL, 0, &threadId);
+	DWORD ThreadID;
+	if ((LoopThreadHandle = CreateThread(NULL, 0, LoopThread, 0, 0, &ThreadID)) == NULL)
+	{
+		return;
+	}
 }
 
 void GameServerLoopEnd()
@@ -2089,7 +2124,7 @@ void MC_SEND_CcsShareInfo()
 
 	EnterCriticalSection(&gameservercriti);
 
-	if (g_CCSInfoShare.ShareCount > 0)
+	if (g_cCCS_INFOSHARE_BUF.ShareCount > 0)
 	{
 		if (g_bGameServerLive)
 		{
@@ -2097,22 +2132,22 @@ void MC_SEND_CcsShareInfo()
 
 			if (!g_bJoinServerLive)
 			{
-				g_CCSInfoShare.JoinServerCount = 0;
+				g_cCCS_INFOSHARE_BUF.JoinServerCount = 0;
 			}
 
-			WORD size = MAKEWORD(g_CCSInfoShare.sizeL,g_CCSInfoShare.sizeH);
-			g_CsInfoMultiCast.SendData((char*)&g_CCSInfoShare,size);
+			WORD size = MAKEWORD(g_cCCS_INFOSHARE_BUF.sizeL,g_cCCS_INFOSHARE_BUF.sizeH);
+			g_CsInfoMultiCast.SendData((char*)&g_cCCS_INFOSHARE_BUF,size);
 
 			goto EXIT_LABEL;
 		}
 
 		if (g_bJoinServerLive)
 		{
-			g_CCSInfoShare.ShareCount = 0;
-			g_CCSInfoShare.c = 0xC2;
-			g_CCSInfoShare.sizeH = 0;
-			g_CCSInfoShare.sizeL = 0x10;
-			g_CCSInfoShare.head = 0x03;
+			g_cCCS_INFOSHARE_BUF.ShareCount = 0;
+			g_cCCS_INFOSHARE_BUF.c			= PMHC_WORD;
+			g_cCCS_INFOSHARE_BUF.sizeH		= 0;
+			g_cCCS_INFOSHARE_BUF.sizeL		= 0x10;
+			g_cCCS_INFOSHARE_BUF.head		= 0x03;
 			goto SEND_PACKET;
 		}
 	}
@@ -2175,7 +2210,7 @@ void MC_RECV_CcsShareInfo(PMSG_CCS_INFOSHARE* lpMsg)
 			lpServer->LiveTime = GetTickCount();
 			lpServer->MaxUserCount =lpInfo->MaxUserCount;
 			lpServer->ServerFlag =lpInfo->ServerFlag;
-			lpServer->FreeUserSlots =lpInfo->FreeUserSlots;
+			lpServer->PCbangCount =lpInfo->PCbangCount;
 			lpServer->UserCount =lpInfo->UserCount;
 
 			if (!lpServer->Live)

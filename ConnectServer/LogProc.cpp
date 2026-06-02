@@ -6,9 +6,9 @@
 #include <ctime>
 
 // Static format strings (original hardcoded strings)
-static const char* s_szLogDir = "log\\";
-static const char* s_szLogMode = "a+t";
-static const char* s_szErrorLogWrite = "error-L1 : Log write error.";
+//static const char* s_szLogDir = "log\\";
+//static const char* s_szLogMode = "a+t";
+//static const char* s_szErrorLogWrite = "error-L1 : Log write error.";
 
 // =========================================================================
 // Constructor - matches original IDA offset assignments
@@ -83,7 +83,7 @@ void CLogProc::LogInit(int bEnable)
         // Clear all log buffers (25 lines, 80 bytes each = 0x50)
         for (int i = 0; i < LOG_BUFFER_COUNT; ++i)
         {
-            memset(m_szLogBuffer[i], 0, 0x50);  // 0x50 = 80 bytes
+            memset(m_szLogBuffer[i], 0, LOG_BUFFER_SIZE);  // 0x50 = 80 bytes
             m_wTextLength[i] = 0;
             m_bTextColor[i] = LOG_COLOR_NORMAL;
         }
@@ -121,23 +121,19 @@ const char* CLogProc::LogGetFileName()
 void CLogProc::LogDataSet()
 {
     // Get current date
-    time_t timeptr;
-    time(&timeptr);
-    tm* v2 = localtime(&timeptr);
+    time_t currentTime;
+    time(&currentTime);
+    tm* today = localtime(&currentTime);
 
-    int v3 = v2->tm_year + 1900;
-    v2->tm_year = v3;
-    m_nLogYear = v3;
-
-    int v4 = v2->tm_mon + 1;
-    m_nLogMonth = v4;
-
-    int tm_mday = v2->tm_mday;
-    m_nLogDay = tm_mday;
+    // Store date components
+    m_nLogYear = today->tm_year + 1900;
+    m_nLogMonth = today->tm_mon + 1;
+    m_nLogDay = today->tm_mday;
 
     // Build filename: log\YYMMDD.log
-    char file[52];
-    wsprintfA(file, "log\\%02d%02d%02d.log", v3, v4, tm_mday);
+    char szNewFile[MAX_PATH];
+    _snprintf(szNewFile, sizeof(szNewFile), "log\\%02d%02d%02d.log", m_nLogYear, m_nLogMonth, m_nLogDay);
+    szNewFile[sizeof(szNewFile) - 1] = '\0';
 
     // Close existing file if open
     if (m_pLogFile)
@@ -147,15 +143,16 @@ void CLogProc::LogDataSet()
     }
 
     // Open new file in append mode
-    m_pLogFile = fopen(file, s_szLogMode);
+    m_pLogFile = fopen(szNewFile, "a+t");
     if (!m_pLogFile)
     {
-        LogAddFunc(s_szErrorLogWrite);
+        LogAddFunc("error-L1 : Log write error.");
+        //MsgBox("error-L1 : Log write error.");
         return;
     }
 
     // Store filename
-    strcpy(m_szLogFileName, file);
+    strncpy_s(m_szLogFileName, sizeof(m_szLogFileName), szNewFile, _TRUNCATE);
 }
 
 // =========================================================================
@@ -165,29 +162,31 @@ void CLogProc::LogDataSet()
 int CLogProc::LogDateChange()
 {
     // Get current date
-    time_t timeptr;
-    time(&timeptr);
-    tm* v2 = localtime(&timeptr);
+    time_t currentTime;
+    time(&currentTime);
+    tm* today = localtime(&currentTime);
 
-    int v3 = v2->tm_year + 1900;
-    int v4 = v2->tm_mon + 1;
-    v2->tm_year = v3;
-    v2->tm_mon = v4;
+    int currentYear = today->tm_year + 1900;
+    int currentMonth = today->tm_mon + 1;
+    int currentDay = today->tm_mday;
 
     // Check if date has changed
-    if (v3 <= m_nLogYear && v4 <= m_nLogMonth && v2->tm_mday <= m_nLogDay)
+    if (currentYear <= m_nLogYear &&
+        currentMonth <= m_nLogMonth &&
+        currentDay <= m_nLogDay)
+    {
         return 0;  // No change
+    }
 
     // Update stored date
-    m_nLogYear = v3;
-    int tm_mon = v2->tm_mon;
-    m_nLogMonth = tm_mon;
-    int tm_mday = v2->tm_mday;
-    m_nLogDay = tm_mday;
+    m_nLogYear = currentYear;
+    m_nLogMonth = currentMonth;
+    m_nLogDay = currentDay;
 
     // Build new filename
-    char file[20];
-    wsprintfA(file, "log\\%02d%02d%02d.log", m_nLogYear, tm_mon, tm_mday);
+    char szNewFile[MAX_PATH];
+    _snprintf(szNewFile, sizeof(szNewFile), "%s%02d%02d%02d.log", m_nLogYear, m_nLogMonth, m_nLogDay);
+    szNewFile[sizeof(szNewFile) - 1] = '\0';
 
     // Close old file
     if (m_pLogFile)
@@ -197,15 +196,15 @@ int CLogProc::LogDateChange()
     }
 
     // Open new file
-    m_pLogFile = fopen(file, s_szLogMode);
+    m_pLogFile = fopen(szNewFile, "a+t");
     if (!m_pLogFile)
     {
-        MsgBox(s_szErrorLogWrite);
+        MsgBox("error-L1 : Log write error.");
         return 0;
     }
 
     // Update filename
-    strcpy(m_szLogFileName, file);
+    strncpy_s(m_szLogFileName, sizeof(m_szLogFileName), szNewFile, _TRUNCATE);
 
     return 1;  // File rotated
 }
@@ -215,22 +214,30 @@ int CLogProc::LogDateChange()
 // =========================================================================
 void CLogProc::LogTextAdd(BYTE color, const char* text, int len)
 {
-    unsigned int v4 = len;
-    if (len > 79)  // 0x4F = 79
-        v4 = 79;
+    // Clamp length to buffer size - 1 (leave room for null terminator)
+    if (len > LOG_BUFFER_SIZE - 1)
+        len = LOG_BUFFER_SIZE - 1;
 
-    if (m_nBufferIndex > 29)
+    // Wrap buffer index if needed
+    if (m_nBufferIndex >= LOG_BUFFER_COUNT)
         m_nBufferIndex = 0;
 
-    // Clear and copy text to current buffer slot
+    // Get pointer to current buffer slot
     char* pSlot = m_szLogBuffer[m_nBufferIndex];
-    pSlot[0] = 0;
-    memcpy(pSlot, text, v4);
-    pSlot[v4 + 1] = 0;   // Null after the text
-    pSlot[v4] = 0;       // Null at end of text
-    m_wTextLength[m_nBufferIndex] = (WORD)v4;
-    m_bTextColor[m_nBufferIndex] = color;
 
+    // Clear and copy text
+    memset(pSlot, 0, LOG_BUFFER_SIZE);
+    if (text && len > 0)
+    {
+        memcpy(pSlot, text, len);
+        pSlot[len] = '\0';  // Ensure null termination
+    }
+
+    // Store length and color
+    m_wTextLength[m_nBufferIndex] = static_cast<WORD>(len);
+    m_bTextColor[m_nBufferIndex] = static_cast<BYTE>(color);
+
+    // Advance to next slot
     ++m_nBufferIndex;
 }
 
@@ -241,7 +248,7 @@ void CLogProc::LogTextClear()
 {
     for (int i = 0; i < LOG_BUFFER_COUNT; ++i)
     {
-        memset(m_szLogBuffer[i], 0, 0x50);  // 80 bytes
+        memset(m_szLogBuffer[i], 0, LOG_BUFFER_SIZE);  // 80 bytes
         m_wTextLength[i] = 0;
         m_bTextColor[i] = LOG_COLOR_NORMAL;
     }
@@ -257,27 +264,29 @@ void CLogProc::LogAddFunc(const char* format, ...)
         return;
 
     // Format message
-    char string[509];
-    string[0] = 0;
-    memset(&string[1], 0, 0x1FC);  // 508 bytes
-    WORD v4 = 0;
-    char v5 = 0;
+    char szMessage[512];
+    szMessage[0] = '\0';
 
-    va_list ap;
-    va_start(ap, format);
-    vsprintf(string, format, ap);
-    va_end(ap);
+    va_list args;
+    va_start(args, format);
+    _vsnprintf_s(szMessage, sizeof(szMessage), _TRUNCATE, format, args);
+    va_end(args);
 
     // Add to circular buffer
-    LogTextAdd(LOG_COLOR_NORMAL, string, (int)strlen(string));
+    LogTextAdd(LOG_COLOR_NORMAL, szMessage, static_cast<int>(strlen(szMessage)));
 
     // Repaint parent window if available
     if (m_hParentWnd)
+    {
         LogTextPaintProc(m_hParentWnd);
+    }
 
     // Write to file if enabled
     if (m_bEnableFile && m_pLogFile)
-        fprintf(m_pLogFile, "%s\n", string);
+    {
+        fprintf(m_pLogFile, "%s\n", szMessage);
+        fflush(m_pLogFile);  // Ensure immediate write
+    }
 }
 
 // =========================================================================
@@ -289,27 +298,29 @@ void CLogProc::LogAddFuncColor(BYTE color, const char* format, ...)
         return;
 
     // Format message
-    char string[1021];
-    string[0] = 0;
-    memset(&string[1], 0, 0x3FC);  // 1020 bytes
-    WORD v5 = 0;
-    char v6 = 0;
+    char szMessage[1024];
+    szMessage[0] = '\0';
 
-    va_list ap;
-    va_start(ap, format);
-    vsprintf(string, format, ap);
-    va_end(ap);
+    va_list args;
+    va_start(args, format);
+    _vsnprintf_s(szMessage, sizeof(szMessage), _TRUNCATE, format, args);
+    va_end(args);
 
     // Add to circular buffer with color
-    LogTextAdd(color, string, (int)strlen(string));
+    LogTextAdd(color, szMessage, static_cast<int>(strlen(szMessage)));
 
     // Repaint parent window if available
     if (m_hParentWnd)
+    {
         LogTextPaintProc(m_hParentWnd);
+    }
 
-    // Write to file if enabled
+    // Write to file if enabled (color not preserved in file)
     if (m_bEnableFile && m_pLogFile)
-        fprintf(m_pLogFile, "%s\n", string);
+    {
+        fprintf(m_pLogFile, "%s\n", szMessage);
+        fflush(m_pLogFile);
+    }
 }
 
 // =========================================================================
@@ -357,49 +368,48 @@ void CLogProc::LogAddTimeDateFunc(const char* format, ...)
     if (!m_bEnableUI)
         return;
 
-    // Format message
-    char string[1021];
-    string[0] = 0;
-    memset(&string[1], 0, 0x3FC);  // 1020 bytes
-    WORD v10 = 0;
-    char v11 = 0;
-
-    va_list ap;
-    va_start(ap, format);
-
     // Get current time
-    time_t timeptr;
-    time(&timeptr);
-    tm* v2 = localtime(&timeptr);
-
-    // Determine AM/PM
-    char noonStr[3] = "AM";
-    if (v2->tm_hour >= 12)
-    {
-        strcpy(noonStr, "PM");
-        v2->tm_hour -= 12;
-    }
-    if (v2->tm_hour == 0)
-        v2->tm_hour = 12;
+    time_t currentTime;
+    time(&currentTime);
+    tm* today = localtime(&currentTime);
 
     // Format time string: "HH:MM:SS AM/PM "
-    char* ascStr = asctime(v2);
-    char v8[512];
-    wsprintfA(v8, "%.8s%s ", ascStr + 11, noonStr);
+    char szTime[16];
+    int hour = today->tm_hour;
+    const char* szAmPm = "AM";
 
-    // Format user message
-    vsprintf(string, format, ap);
-    va_end(ap);
+    if (hour >= 12)
+    {
+        szAmPm = "PM";
+        if (hour > 12)
+            hour -= 12;
+    }
+    if (hour == 0)
+        hour = 12;
 
-    // Combine
-    strcat(v8, string);
+    _snprintf_s(szTime, sizeof(szTime), _TRUNCATE, "%02d:%02d:%02d %s ",
+        hour, today->tm_min, today->tm_sec, szAmPm);
+
+    // Format message
+    char szMessage[1024];
+    va_list args;
+    va_start(args, format);
+    _vsnprintf_s(szMessage, sizeof(szMessage), _TRUNCATE, format, args);
+    va_end(args);
+
+    // Combine timestamp + message
+    char szFullMessage[1040];
+    _snprintf_s(szFullMessage, sizeof(szFullMessage), _TRUNCATE, "%s%s", szTime, szMessage);
 
     // Add to buffer
-    LogTextAdd(LOG_COLOR_NORMAL, v8, (int)strlen(v8));
+    LogTextAdd(LOG_COLOR_NORMAL, szFullMessage, static_cast<int>(strlen(szFullMessage)));
 
     // Write to file if enabled
     if (m_bEnableFile && m_pLogFile)
-        fprintf(m_pLogFile, "%s\n", v8);
+    {
+        fprintf(m_pLogFile, "%s\n", szFullMessage);
+        fflush(m_pLogFile);
+    }
 }
 
 // =========================================================================
@@ -410,8 +420,11 @@ void CLogProc::LogTextPaintProc(HWND hWnd)
     if (!m_bEnableUI)
         return;
 
-    // Clear the background (no parameter - uses m_hWnd internally)
-    ClearParentWindow();
+    // Clear parent window background if not using bitmap
+    if (!m_hBufferBitmap)
+    {
+        ClearParentWindow();
+    }
 
     HDC hdc = GetDC(hWnd);
 
@@ -478,8 +491,11 @@ void CLogProc::LogTextPaintProc(HWND hWnd)
     }
 
     // If logo, copy the offscreen DC to the window
-    if (m_hBufferBitmap)
+    if (m_hBufferBitmap && hdcSrc)
     {
+        RECT rc;
+        GetClientRect(m_hParentWnd, &rc);
+
         BitBlt(hdc, 0, 0, Rect.right, Rect.bottom, hdcSrc, 0, 0, SRCCOPY);
         // Cleanup
         SelectObject(hdcSrc, hObj1);

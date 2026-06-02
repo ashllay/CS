@@ -313,14 +313,14 @@ unsigned int __stdcall CWzMultiCastSock::RecvThreadProc(void* pParam)
         if (nRecv < 0)
             break;
 
-        if ((BYTE)buf[0] == 0xC1)
+        if ((BYTE)buf[0] == PMHC_BYTE)
         {
             if (lpThis->m_pfnRecvCallback)
             {
                 lpThis->m_pfnRecvCallback(lpThis,*(DWORD*)&from.sa_data[2],(BYTE)buf[2],(BYTE)buf[3],buf,nRecv);
             }
         }
-        else if ((BYTE)buf[0] == 0xC2)
+        else if ((BYTE)buf[0] == PMHC_WORD)
         {
             if (lpThis->m_pfnRecvCallback)
             {

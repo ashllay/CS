@@ -47,7 +47,7 @@ extern std::stack<int>  g_ObjIndexQ;          // Original uses std::stack<int>
 // Public API
 void        gObjInit();
 void        gObjEnd();
-int         gObjAdd(SOCKET aSocket, struct in_addr* pAddr);
+int         gObjAdd(SOCKET aSocket, in_addr* pAddr);
 int         gObjDel(int nIndex);
 int         gObjGetSocket(SOCKET socket);
 void        gObjSetTime(int nIndex);

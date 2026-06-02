@@ -3,7 +3,7 @@
 #include "LogProc.h"
 #include "LogToFile.h"
 
-//CIpAddrMng g_CsIpAddrMng;
+CIpAddrMng g_CsIpAddrMng;
 
 static const int DEFAULT_MAX_PACKET_PER_SEC = 30;
 static const int DEFAULT_MAX_INVALID_PACKETS = 100;
