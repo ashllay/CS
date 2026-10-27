@@ -99,7 +99,6 @@
 #define IDI_ICON_STATE_ONLINE           132
 #define IDI_ICON_TEXT_CS_YELLOW         133
 #define IDI_ICON_TEXT_CS_RED            134
-#define IDI_ICON_NODE_SPLIT             108
 #define IDI_ICON_QUESTION               32515
 
 // =========================================================================

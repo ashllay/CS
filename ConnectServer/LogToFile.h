@@ -1,62 +1,33 @@
-#pragma once
 
-#ifndef __LOGTOFILE_H__
-#define __LOGTOFILE_H__
+#ifndef _LOGTOFILE_H_
+#define _LOGTOFILE_H_
 
-// Path/filename buffer sizes (MAX_PATH = 260 on Windows)
-#define LOG_PATH_BUFFER_SIZE  260
-#define LOG_PREFIX_BUFFER_SIZE 260
-#define LOG_MESSAGE_BUFFER_SIZE 1024
+#include <windows.h>
+#include <stdio.h>
+//#include "stdafx.h"     // for MFC Application
+
+#define DEF_LOG_FILE_NAME		"LOGDATA"
+#define DEF_LOG_DIRECTORY_NAME	"LOG"
+#define LINE_BUF				(1024 * 64)
+
 
 class CLogToFile
 {
 public:
-    // Constructor / Destructor
-    CLogToFile(const char* szLogPrefix, const char* szLogPath, int bWithTime = 1);
-    ~CLogToFile();
+	void Output(char* fmt, ...);
 
-    // Logging output (printf-style, thread-safe)
-    void Output(const char* format, ...);
-
-    // Configuration
-    void SetLogPrefix(const char* szPrefix);
-    void SetLogPath(const char* szPath);
-    void SetWithTime(int bWithTime);
-
-    // Accessors
-    const char* GetLogPrefix() const { return m_szLogPrefix; }
-    const char* GetLogPath() const { return m_szLogPath; }
-    BOOL IsWithTime() const { return m_bWithTime; }
-    CRITICAL_SECTION* GetCriticalSection() { return &m_cs; }
-
-protected:
-    // Member variables (functional equivalent of original layout)
-
-    // [0x000] Temporary FILE* handle (used only during Output)
-    FILE* m_pFile;
-
-    // [0x004] Log filename prefix buffer (e.g., "ErrorLog")
-    char m_szLogPrefix[LOG_PREFIX_BUFFER_SIZE];
-
-    // [0x108] Log directory path buffer (e.g., "log")
-    char m_szLogPath[LOG_PATH_BUFFER_SIZE];
-
-    // [0x20C] Flag: prepend time to each log line
-    int m_bWithTime;
-
-    // [0x210] Buffer for formatted message (vsprintf output)
-    char m_szMessageBuffer[LOG_MESSAGE_BUFFER_SIZE];
-
-    // [0x614] Thread synchronization
-    CRITICAL_SECTION m_cs;
+	CLogToFile(char LogFileName[MAX_PATH] = DEF_LOG_FILE_NAME, char LogDirectoryName[MAX_PATH] = DEF_LOG_DIRECTORY_NAME, BOOL bWithDate = TRUE);
+	~CLogToFile();
 
 private:
-    // Helper: Build date-based log filename
-    void BuildLogFilename(char* szBuffer, size_t bufferSize, const SYSTEMTIME* st);
+	FILE* m_fLogFile;
+	char m_szLogFileName[MAX_PATH];
+	char m_szLogDirectoryName[MAX_PATH];
+	char m_cBUFFER[LINE_BUF];
 
-    // Helper: Write message to file with optional timestamp
-    void WriteToFile(FILE* pFile, const char* szMessage, const SYSTEMTIME* st);
+	BOOL m_bWithDate;
+	CRITICAL_SECTION m_critLogToFile;
 };
-extern CLogToFile g_LogFileError;
 
-#endif // __LOGTOFILE_H__
+
+#endif

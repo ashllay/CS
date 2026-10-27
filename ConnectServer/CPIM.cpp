@@ -1,9 +1,11 @@
 ﻿#include "StdAfx.h"
+#include <process.h>
 #include "CPIM.h"
 
 CPIM::CPIM(int QueueCount)
 {
     m_QueueCount = QueueCount;
+    m_QueueIndex = 0;
     m_Callback = NULL;
 
     m_CSArray = new CRITICAL_SECTION[QueueCount];
@@ -32,12 +34,12 @@ CPIM::~CPIM()
         CloseHandle(m_Events[i]);
     }
 
-    delete[] m_CSArray;
-    delete[] m_Queues;
-    delete[] m_Events;
+    // NOTE: The original destructor (0x402D80) does not free m_CSArray,
+    // m_Queues or m_Events; only the worker-handle vector storage is released.
+    // These allocations are intentionally leaked here as well.
 }
 
-bool CPIM::StartWorkers(int Param)
+void CPIM::StartWorkers()
 {
     for (int i = 0; i < m_QueueCount; i++)
     {
@@ -45,20 +47,19 @@ bool CPIM::StartWorkers(int Param)
         {
             PIM_THREAD_PARAM* pInfo = new PIM_THREAD_PARAM();
             pInfo->pPIM = this;
+            pInfo->Param = j;
             pInfo->WorkerID = i;
-            pInfo->Param = Param;
 
-            DWORD dwThreadID = 0;
-            HANDLE hThread = CreateThread(NULL, 0, PI_WorkerThreadProc, pInfo, 0, &dwThreadID);
-            if (!hThread)
-            {
-                delete pInfo;
-                return false;
-            }
+            unsigned int dwThreadID = 0;
+            // Original uses _beginthreadex and pushes the handle into the
+            // worker vector without checking for failure (0x4012E2).
+            HANDLE hThread = (HANDLE)_beginthreadex(NULL, 0, PI_WorkerThreadProc, pInfo, 0, &dwThreadID);
             m_WorkerThreads.push_back(hThread);
+
+            // The original sleeps 100 ms after every worker is created.
+            Sleep(100);
         }
     }
-    return true;
 }
 
 int CPIM::Push(int QueueIndex, _PER_PIM_CONTEXT* Data)
@@ -73,7 +74,7 @@ int CPIM::Push(int QueueIndex, _PER_PIM_CONTEXT* Data)
     return Count;
 }
 
-DWORD WINAPI CPIM::PI_WorkerThreadProc(LPVOID lpParam)
+unsigned int __stdcall CPIM::PI_WorkerThreadProc(void* lpParam)
 {
     PIM_THREAD_PARAM* p = (PIM_THREAD_PARAM*)lpParam;
     CPIM* pPIM = p->pPIM;
@@ -91,7 +92,7 @@ DWORD WINAPI CPIM::PI_WorkerThreadProc(LPVOID lpParam)
 
         if (Data)
         {
-            if (Remaining > 0)
+            if (Remaining != 0)
                 SetEvent(pPIM->m_Events[WorkerID]);
 
             if (pPIM->m_Callback)

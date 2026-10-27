@@ -2,12 +2,8 @@
 //
 //////////////////////////////////////////////////////////////////////
 
-#if !defined(AFX_CRITICALSEC_H__16786BC1_2201_11D5_BBA8_00A02490CE8E__INCLUDED_)
-#define AFX_CRITICALSEC_H__16786BC1_2201_11D5_BBA8_00A02490CE8E__INCLUDED_
-
-#if _MSC_VER > 1000
-#pragma once
-#endif // _MSC_VER > 1000
+#ifndef __CRITICALSEC_H__
+#define __CRITICALSEC_H__
 
 class CCriticalSec  
 {

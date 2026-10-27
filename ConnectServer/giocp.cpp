@@ -12,12 +12,18 @@
 // =========================================================================
 SOCKET				g_Listen = INVALID_SOCKET;
 HANDLE				g_IocpThreadHandle;
-CRITICAL_SECTION	g_critERROR_LOG = { NULL, 0, 0, NULL, NULL, 0 };
-CPIM				g_cPIM(64);
-int					g_PIMQueueIndex = 0;
-CRITICAL_SECTION	g_CS = { NULL, 0, 0, NULL, NULL, 0 };
+CRITICAL_SECTION	g_critERROR_LOG;// = { NULL, 0, 0, NULL, NULL, 0 };
+CPIM				g_cPIM(3);
+CCriticalSec		g_CS;
 int					g_ServerPort = 0;
-HANDLE				g_ThreadHandles[MAX_WORKER_THREAD];
+// See MAX_WORKER_THREAD_STORAGE in giocp.h: the original array only holds
+// MAX_WORKER_THREAD (16) entries while IocpServerWorker() stores
+// g_dwThreadCount = 2 * dwNumberOfProcessors handles, overflowing into ErrorMsg
+// in the original .data layout.  Recording all of them (instead of overflowing)
+// reproduces the original's effective behaviour - DestroyGIocp() sees the same
+// handles - without relying on where the linker places the neighbouring
+// globals.
+HANDLE				g_ThreadHandles[MAX_WORKER_THREAD_STORAGE];
 char				ErrorMsg[1024];
 DWORD				g_dwThreadCount = 0;
 HANDLE				g_CompletionPort = NULL;
@@ -28,23 +34,21 @@ LONG				g_iSockConnNum = 0;
 // =========================================================================
 void GetLastErrorMsg()
 {
-	LPVOID lpMsgBuf;
 	EnterCriticalSection(&g_critERROR_LOG);
-	FormatMessage(
-		FORMAT_MESSAGE_ALLOCATE_BUFFER |
-		FORMAT_MESSAGE_FROM_SYSTEM |
-		FORMAT_MESSAGE_IGNORE_INSERTS,
-		NULL,
-		GetLastError(),
-		0, // Default language
-		(LPTSTR)&lpMsgBuf,
-		0,
-		NULL
-	);
 
-	strcpy(ErrorMsg, (LPCTSTR)lpMsgBuf);
-	// Free the buffer.
-	LocalFree(lpMsgBuf);
+	// Original (0x401080) formats directly into the global ErrorMsg buffer
+	// and then force-terminates the last byte.
+	DWORD LastError = GetLastError();
+	FormatMessageA(
+		FORMAT_MESSAGE_FROM_SYSTEM,
+		NULL,
+		LastError,
+		0,
+		ErrorMsg,
+		1024,
+		NULL);
+	ErrorMsg[1023] = 0;
+
 	LeaveCriticalSection(&g_critERROR_LOG);
 }
 
@@ -55,7 +59,8 @@ int CreateGIocp(int server_port)
 {
 	gObjInit();              // Initialize connection pool
 	g_ServerPort = server_port;
-	return IocpServerWorker();
+	IocpServerWorker();
+	return 1;
 }
 
 // =========================================================================
@@ -98,28 +103,28 @@ void DestroyGIocp()
 // =========================================================================
 int CreateListenSocket()
 {
-	sockaddr_in addr;
+	sockaddr addr;
 
 	// Create overlapped socket
-	g_Listen = WSASocketA(AF_INET, SOCK_STREAM, IPPROTO_TCP, NULL, 0, WSA_FLAG_OVERLAPPED);
+	g_Listen = WSASocketA(AF_INET, SOCK_STREAM, 0, NULL, 0, WSA_FLAG_OVERLAPPED);
 	if (g_Listen == INVALID_SOCKET)
 	{
-		EnterCriticalSection(&g_CS);
-		//g_CS.Lock();
+		g_CS.Lock();
 		g_LogProc.LogAddFuncColor(LOG_COLOR_RED, "WSASocket() failed with error %d", WSAGetLastError());
-		LeaveCriticalSection(&g_CS);
-		//g_CS.UnLock();
+		g_CS.UnLock();
 		return FALSE;
 	}
 
 	// Bind to port
-	addr.sin_family = AF_INET;
-	addr.sin_addr.s_addr = htonl(INADDR_ANY);
-	addr.sin_port = htons(static_cast<u_short>(g_ServerPort));
+	addr.sa_family = AF_INET;
+	*(DWORD*)&addr.sa_data[2] = htonl(INADDR_ANY);
+	*(WORD*)addr.sa_data = htons(static_cast<u_short>(g_ServerPort));
 
-	if (bind(g_Listen, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) == SOCKET_ERROR)
+	if (bind(g_Listen, &addr, sizeof(addr)) == SOCKET_ERROR)
 	{
-		g_LogProc.LogAddFuncColor(LOG_COLOR_RED, "bind error (server may be running already)");
+		// NOTE: The original does not lock g_CS here.
+		g_LogProc.LogAddFuncColor(LOG_COLOR_RED,
+			"bind error (It seems like Game Server is Running Overlapped with Same ID. Please Close That Game Server)");
 		return FALSE;
 	}
 
@@ -136,338 +141,147 @@ int CreateListenSocket()
 // =========================================================================
 // IocpServerWorker - Main IOCP Server Loop
 // =========================================================================
-//#define __TEST
-#ifdef __TEST
-DWORD WINAPI IocpServerWorker()
-{
-	SYSTEM_INFO sysInfo;
-	DWORD ThreadId;
-	SOCKET Accept;
-	int ClientIndex;
-	sockaddr_in cAddr;
-	int cAddrlen = sizeof(cAddr);
-	DWORD RecvBytes;
-	DWORD Flags = 0;
 
-	GetSystemInfo(&sysInfo);
-	g_dwThreadCount = sysInfo.dwNumberOfProcessors * 2;
-
-	// Cap at MAX_WORKER_THREAD
-	if (g_dwThreadCount > MAX_WORKER_THREAD)
-		g_dwThreadCount = MAX_WORKER_THREAD;
-#ifdef __DEBUG_LOG
-	g_LogProc.LogAddFunc("g_dwThreadCount set to %d", g_dwThreadCount);
-#endif
-	__try
-	{
-		// Create IOCP
-		g_CompletionPort = CreateIoCompletionPort(INVALID_HANDLE_VALUE, NULL, 0, 0);
-#ifdef __DEBUG_LOG
-		g_LogProc.LogAddFunc("IOCP created: %p", g_CompletionPort);
-		g_LogProc.LogAddFunc("Creating %d IOCP worker threads", g_dwThreadCount);
-#endif
-		if (!g_CompletionPort)
-		{
-			EnterCriticalSection(&g_CS);
-			g_LogProc.LogAddFuncColor(2, "CreateIoCompletionPort failed with error: %d", GetLastError());
-			LeaveCriticalSection(&g_CS);
-			__leave;
-		}
-
-		// Create IOCP worker threads
-		for (DWORD dwCPU = 0; dwCPU < g_dwThreadCount; dwCPU++)
-		{
-			HANDLE hThread = CreateThread(NULL, 0, IOCPWorkerThread, g_CompletionPort, 0, &ThreadId);
-#ifdef __DEBUG_LOG
-			g_LogProc.LogAddFunc("IOCP worker thread %d created: handle=%p", dwCPU, hThread);
-#endif
-			if (!hThread)
-			{
-				EnterCriticalSection(&g_CS);
-				g_LogProc.LogAddFuncColor(2, "CreateThread() failed with error %d", GetLastError());
-				LeaveCriticalSection(&g_CS);
-				__leave;
-			}
-			g_ThreadHandles[dwCPU] = hThread;
-		}
-
-		// Create listen socket
-		if (!CreateListenSocket())
-			__leave;
-#ifdef __DEBUG_LOG
-		g_LogProc.LogAddFunc("Listen socket created, entering accept loop");
-#endif
-		// Main accept loop
-		while (TRUE)
-		{
-			Accept = WSAAccept(g_Listen, (sockaddr*)&cAddr, &cAddrlen, NULL, 0);
-
-			if (Accept == SOCKET_ERROR)
-			{
-				EnterCriticalSection(&g_CS);
-				int Error = WSAGetLastError();
-				g_LogProc.LogAddFuncColor(2, "WSAAccept() failed with error %d", Error);
-				GetLastErrorMsg();
-				g_LogFileError.Output("Error : File : [%s], Line : [%d]", __FILE__, __LINE__);
-				g_LogFileError.Output("WSAAccept() failed with error %d, %s\n", Error, ErrorMsg);
-				g_LogListBoxError.Output("WSAAccept() failed with error %d, %s", Error, ErrorMsg);
-				LeaveCriticalSection(&g_CS);
-				__leave;
-			}
-
-			// Get IP
-			in_addr cInAddr;
-			memcpy(&cInAddr, &cAddr.sin_addr.s_addr, 4);
-
-			// Add to connection pool
-			ClientIndex = gObjAdd(Accept, &cInAddr);
-			g_LogProc.LogAddFunc("Connect : IP [%s], ClientID = [%d]", inet_ntoa(cInAddr), ClientIndex);
-
-			if (ClientIndex == -1)
-			{
-				closesocket(Accept);
-				continue;
-			}
-
-			// Associate with IOCP
-			if (!UpdateCompletionPort((HANDLE)Accept, ClientIndex))
-			{
-				EnterCriticalSection(&g_CS);
-				GetLastErrorMsg();
-				g_LogFileError.Output("Error : File : [%s], Line : [%d]", __FILE__, __LINE__);
-				g_LogFileError.Output("CreateIoCompletionPort failed with error %d, %s\n", GetLastError(), ErrorMsg);
-				g_LogProc.LogAddFuncColor(2, "CreateIoCompletionPort failed with error %d", GetLastError());
-				LeaveCriticalSection(&g_CS);
-				continue;
-			}
-
-			// Initialize RECV context
-			PER_SOCKET_CONTEXT* pCtx = &gObj[ClientIndex].PerSocketContext;
-
-			pCtx->IOContext[RECV_IO].wsabuf.buf = pCtx->IOContext[RECV_IO].Buffer;
-			pCtx->IOContext[RECV_IO].wsabuf.len = MAX_BUFF_SIZE;
-			pCtx->IOContext[RECV_IO].nTotalBytes = 0;
-			pCtx->IOContext[RECV_IO].nSentBytes = 0;
-			pCtx->IOContext[RECV_IO].nWaitIO = 0;
-			pCtx->IOContext[RECV_IO].nSecondOfs = 0;
-			pCtx->IOContext[RECV_IO].IOOperation = RECV_IO;
-
-			// Initialize SEND context
-			pCtx->IOContext[SEND_IO].wsabuf.buf = pCtx->IOContext[SEND_IO].Buffer;
-			pCtx->IOContext[SEND_IO].wsabuf.len = MAX_BUFF_SIZE;
-			pCtx->IOContext[SEND_IO].nTotalBytes = 0;
-			pCtx->IOContext[SEND_IO].nSentBytes = 0;
-			pCtx->IOContext[SEND_IO].nWaitIO = 0;
-			pCtx->IOContext[SEND_IO].nSecondOfs = 0;
-			pCtx->IOContext[SEND_IO].IOOperation = SEND_IO;
-
-			pCtx->m_socket = Accept;
-			pCtx->nIndex = ClientIndex;
-
-			// Post initial receive
-			int nRet = WSARecv(Accept, &pCtx->IOContext[RECV_IO].wsabuf, 1, &RecvBytes, &Flags,
-				&pCtx->IOContext[RECV_IO].Overlapped, NULL);
-#ifdef __DEBUG_LOG
-			int nError = WSAGetLastError();  // SAVE IMMEDIATELY
-
-			g_LogProc.LogAddFunc("WSARecv posted: ret=%d, error=%d, buf=%p, len=%d",
-				nRet, nError, pCtx->IOContext[RECV_IO].wsabuf.buf, pCtx->IOContext[RECV_IO].wsabuf.len);
-#endif
-
-			if (nRet == SOCKET_ERROR && WSAGetLastError() != ERROR_IO_PENDING)
-			{
-#ifdef __DEBUG_LOG
-				g_LogProc.LogAddFunc("WSARecv FAILED: ret=%d, error=%d", nRet, nError);
-#endif
-				EnterCriticalSection(&g_CS);
-				GetLastErrorMsg();
-				int Error = WSAGetLastError();
-				g_LogFileError.Output("Error : File : [%s], Line : [%d]", __FILE__, __LINE__);
-				g_LogFileError.Output("IocpServerWorker :: WSARecv() failed with error %d, %s\n", Error, ErrorMsg);
-				g_LogProc.LogAddFunc("IocpServerWorker :: WSARecv() failed with error %d", Error);
-				g_LogProc.LogAddFunc("IocpServerWorker :: ClientIndex =  %d", ClientIndex);
-				LeaveCriticalSection(&g_CS);
-
-				pCtx->IOContext[RECV_IO].nWaitIO = 4;
-				CloseClient(pCtx);
-				continue;
-			}
-			else
-			{
-#ifdef __DEBUG_LOG
-				g_LogProc.LogAddFunc("WSARecv OK: nWaitIO=1, IOCount incremented");
-#endif
-				pCtx->IOContext[RECV_IO].nWaitIO = 1;
-				InterlockedIncrement(&pCtx->dwIOCount);
-			}
-
-			// Send connection success
-			SCConnectResultSend(1, ClientIndex);
-		}
-	}
-	__finally
-	{
-		// Shutdown: post completion packets
-		if (g_CompletionPort)
-		{
-			for (DWORD i = 0; i < g_dwThreadCount; i++)
-				PostQueuedCompletionStatus(g_CompletionPort, 0, 0, NULL);
-
-			CloseHandle(g_CompletionPort);
-			g_CompletionPort = NULL;
-		}
-
-		// Close listen socket
-		if (g_Listen != INVALID_SOCKET)
-		{
-			closesocket(g_Listen);
-			g_Listen = INVALID_SOCKET;
-		}
-	}
-
-	return TRUE;
-}
-#else
-
-DWORD WINAPI IocpServerWorker()
+DWORD IocpServerWorker()
 {
 	DWORD ThreadId;
 	SOCKET Accept;
-	SYSTEM_INFO sysInfo;
+	SYSTEM_INFO SystemInfo;
+	sockaddr addr;			// NOTE: intentionally not initialized (original reuses it)
+	int addrlen;
 
-	GetSystemInfo(&sysInfo);
+	GetSystemInfo(&SystemInfo);
 
 	// Set thread count (2x CPU count)
-	g_dwThreadCount = 2 * sysInfo.dwNumberOfProcessors;
+	g_dwThreadCount = 2 * SystemInfo.dwNumberOfProcessors;
 
 	// Set PIM callback and start PIM worker threads
-	// StartWorkers creates g_dwThreadCount * 4 worker threads internally
+	// StartWorkers creates 4 worker threads per queue internally
 	g_cPIM.m_Callback = PIM_WORKERPROC;
-	g_cPIM.StartWorkers(0);
+	g_cPIM.StartWorkers();
 
 	// Create IOCP completion port
 	g_CompletionPort = CreateIoCompletionPort(INVALID_HANDLE_VALUE, NULL, 0, 0);
 	if (!g_CompletionPort)
 	{
-		EnterCriticalSection(&g_CS);
-		//g_CS.Lock();
-		g_LogProc.LogAddFuncColor(2, "CreateIoCompletionPort failed with error: %d", GetLastError());
-		LeaveCriticalSection(&g_CS);
-		//g_CS.UnLock();
-		return 0;
+		g_CS.Lock();
+		// NOTE: The original format string expects (error, description) but
+		// only the error code is passed; the %s reads the stale stack value.
+		g_LogProc.LogAddFuncColor(LOG_COLOR_RED, "CreateIoCompletionPort: %d, %s\n", GetLastError());
+		g_CS.UnLock();
 	}
-
-	// Create IOCP worker threads
-	for (DWORD dwCPU = 0; dwCPU < g_dwThreadCount; ++dwCPU)
+	else
 	{
-		HANDLE hThread = CreateThread(NULL, 0, IOCPWorkerThread, g_CompletionPort, 0, &ThreadId);
-#ifdef __DEBUG_LOG
-		g_LogProc.LogAddFunc("IOCP worker thread %d created: handle=%p", dwCPU, hThread);
-#endif
-		if (!hThread)
+		bool bCreateThreadFailed = false;
+
+		// Create IOCP worker threads
+		for (DWORD dwCPU = 0; dwCPU < g_dwThreadCount; ++dwCPU)
 		{
-			EnterCriticalSection(&g_CS);
-			//g_CS.Lock();
-			g_LogProc.LogAddFuncColor(2, "CreateThread() failed with error %d", GetLastError());
-			LeaveCriticalSection(&g_CS);
-			//g_CS.UnLock();
-			return 0;
-		}
-		g_ThreadHandles[dwCPU] = hThread;
-	}
-
-	// Create listen socket
-	if (!CreateListenSocket())
-		return 0;
-
-	// Main accept loop
-	while (!g_bDoTerminateLoopThread)
-	{
-		sockaddr_in addr = { 0 };
-		int addrlen = sizeof(addr);
-
-		Accept = WSAAccept(g_Listen, (sockaddr*)&addr, &addrlen, NULL, 0);
-
-		if (Accept == INVALID_SOCKET)
-		{
-			EnterCriticalSection(&g_CS);
-			//g_CS.Lock();
-			int Error = WSAGetLastError();
-			g_LogProc.LogAddFuncColor(2, "accept() failed with error %d", Error);
-			GetLastErrorMsg();
-
-			g_LogFileError.Output("Error : File : [%s], Line : [%d]", __FILE__, __LINE__);
-			g_LogFileError.Output("accept() failed with error (%d, %s)\n", Error, ErrorMsg);
-			g_LogListBoxError.Output("accept() failed with error (%d, %s)", Error, ErrorMsg);
-			LeaveCriticalSection(&g_CS);
-			//g_CS.UnLock();
-
-			// Retry: recreate listen socket
-			while (true)
+			HANDLE hThread = CreateThread(NULL, 0, IOCPWorkerThread, g_CompletionPort, 0, &ThreadId);
+			if (!hThread)
 			{
-				closesocket(g_Listen);
-				if (CreateListenSocket())
-					break;
-
-				int retryError = WSAGetLastError();
-				g_LogProc.LogAddFuncColor(2, "Recreate Listen Socket is Failed. (ERROR : %d)  Retry After 60000 msec.", retryError);
-				g_LogFileError.Output("Recreate Listen Socket is Failed. (ERROR : %d)", retryError);
-				g_LogListBoxError.Output("Recreate Listen Socket is Failed. (ERROR : %d)  Retry After 60000 msec.", retryError);
-				Sleep(60000);
+				g_CS.Lock();
+				g_LogProc.LogAddFuncColor(LOG_COLOR_RED, "CreateThread() failed with error %d", GetLastError());
+				g_CS.UnLock();
+				bCreateThreadFailed = true;
+				break;
 			}
-
-			g_LogProc.LogAddFuncColor(1, "Recreate Listen Socket is Succeed. (SID : %d)", g_Listen);
-			g_LogFileError.Output("Recreate Listen Socket is Succeed. (SID : %d)", g_Listen);
-			continue;
+			g_ThreadHandles[dwCPU] = hThread;
 		}
 
-		// ============================================================
-		// 1. DDoS CHECK FIRST (original order)
-		// ============================================================
-		char szIP[29];
-		memset(szIP, 0, sizeof(szIP));
-		strcpy(szIP, inet_ntoa(*(struct in_addr*)&addr.sin_addr));
-
-		IPADDR_INFO ipInfo = { 0 };
-		g_CsIpAddrMng.GetIpAddrInfo(&ipInfo, (DWORD*)&addr.sin_addr);
-
-		if (ipInfo.dwRestrictFlags == 1 && strcmp(szIP, DDOSNoCheckingIpAddress) != 0)
+		// Create listen socket
+		if (!bCreateThreadFailed && CreateListenSocket())
 		{
-			BOOL bDontLinger = TRUE;
-			setsockopt(Accept, SOL_SOCKET, SO_DONTLINGER, (char*)&bDontLinger, sizeof(bDontLinger));
-			closesocket(Accept);
-			continue;
-		}
-
-		// ============================================================
-		// 2. LOCAL NETWORK CHECK SECOND
-		// ============================================================
-		if (g_bLocalNetworkConnectOnly)
-		{
-			if (strcmp(szIP, "218.234.76.254") != 0 && strncmp(szIP, "172.30.120", 6) != 0)
+			// Main accept loop
+			while (!g_bDoTerminateLoopThread)
 			{
-				g_LogFileError.Output("[Local Only #2] Block IP : %s ", szIP);
-				sizeof(_PER_IO_CONTEXT);
-				BOOL bDontLinger = TRUE;
-				setsockopt(Accept, SOL_SOCKET, SO_DONTLINGER, (char*)&bDontLinger, sizeof(bDontLinger));
-				closesocket(Accept);
-				continue;
+				addrlen = 16;
+
+				Accept = WSAAccept(g_Listen, &addr, &addrlen, NULL, 0);
+
+				if (Accept == INVALID_SOCKET)
+				{
+					g_CS.Lock();
+					g_LogProc.LogAddFuncColor(LOG_COLOR_RED, "accept() failed with error %d", WSAGetLastError());
+					GetLastErrorMsg();
+					g_LogFileError.Output("Error : File : [%s], Line : [%d]", __FILE__, __LINE__);
+					g_LogFileError.Output("accept() failed with error (%d, %s)\n", WSAGetLastError(), ErrorMsg);
+					g_LogListBoxError.Output("accept() failed with error (%d, %s)", WSAGetLastError(), ErrorMsg);
+					g_CS.UnLock();
+
+					// Retry: recreate listen socket
+					while (true)
+					{
+						closesocket(g_Listen);
+						if (CreateListenSocket())
+							break;
+
+						int retryError = WSAGetLastError();
+						g_LogProc.LogAddFuncColor(LOG_COLOR_RED, "Recreate Listen Socket is Failed. (ERROR : %d)  Retry After 60000 msec.", retryError);
+						g_LogFileError.Output("Recreate Listen Socket is Failed. (ERROR : %d)", retryError);
+						g_LogListBoxError.Output("Recreate Listen Socket is Failed. (ERROR : %d)  Retry After 60000 msec.", retryError);
+						Sleep(60000);
+					}
+
+					g_LogProc.LogAddFuncColor(1, "Recreate Listen Socket is Succeed. (SID : %d)", g_Listen);
+					g_LogFileError.Output("Recreate Listen Socket is Succeed. (SID : %d)", g_Listen);
+
+					// NOTE: The original does NOT 'continue' here. It falls through
+					// with Accept == INVALID_SOCKET and the stale sockaddr values.
+				}
+
+				// ============================================================
+				// 1. LOCAL NETWORK CHECK (original order)
+				// ============================================================
+				if (g_bLocalNetworkConnectOnly)
+				{
+					char szIP[29];
+					memset(szIP, 0, sizeof(szIP));
+					strcpy(szIP, inet_ntoa(*(struct in_addr*)&addr.sa_data[2]));
+
+					if (strcmp(szIP, "218.234.76.254") != 0 && strncmp(szIP, "172.30.120", 6) != 0)
+					{
+						g_LogFileError.Output("[Local Only #2] Block IP : %s ", szIP);
+						struct linger ling = { 1, 0 };
+						setsockopt(Accept, SOL_SOCKET, SO_LINGER, (char*)&ling, sizeof(ling));
+						closesocket(Accept);
+						continue;
+					}
+				}
+
+				// ============================================================
+				// 2. DDOS CHECK
+				// ============================================================
+				IPADDR_INFO ipInfo = g_CsIpAddrMng.GetIpAddrInfo(*(DWORD*)&addr.sa_data[2]);
+
+				char szIP[29];
+				memset(szIP, 0, sizeof(szIP));
+				strcpy(szIP, inet_ntoa(*(struct in_addr*)&addr.sa_data[2]));
+
+				if (ipInfo.dwRestricted != 1 || strcmp(szIP, DDOSNoCheckingIpAddress) == 0)
+				{
+					// ============================================================
+					// 3. ENQUEUE TO PIM
+					// ============================================================
+					int nQueueIndex = g_cPIM.m_QueueIndex % g_cPIM.m_QueueCount;
+					++g_cPIM.m_QueueIndex;
+					if (nQueueIndex >= g_cPIM.m_QueueCount)
+						nQueueIndex = 0;
+
+					_PER_PIM_CONTEXT* pData = new _PER_PIM_CONTEXT;
+					pData->Socket = Accept;
+					pData->IpAddr = *(struct in_addr*)&addr.sa_data[2];
+
+					g_cPIM.Push(nQueueIndex, pData);
+				}
+				else
+				{
+					struct linger ling = { 1, 0 };
+					setsockopt(Accept, SOL_SOCKET, SO_LINGER, (char*)&ling, sizeof(ling));
+					closesocket(Accept);
+				}
 			}
 		}
-
-		// ============================================================
-		// 3. ENQUEUE TO PIM
-		// ============================================================
-		int nQueueIndex = g_PIMQueueIndex % g_dwThreadCount;
-		++g_PIMQueueIndex;
-		if (nQueueIndex >= g_dwThreadCount)
-			nQueueIndex = 0;
-
-		_PER_PIM_CONTEXT* pData = new _PER_PIM_CONTEXT;
-		pData->Socket = Accept;
-		pData->IP = addr.sin_addr.s_addr;
-
-		g_cPIM.Push(nQueueIndex, pData);
 	}
 
 	// Shutdown: post completion packets to wake worker threads
@@ -489,7 +303,7 @@ DWORD WINAPI IocpServerWorker()
 
 	return 1;
 }
-#endif
+
 // =========================================================================
 // IOCPRecvSignal - Handle Completed Receive
 // =========================================================================
@@ -510,7 +324,7 @@ void IOCPRecvSignal(PER_SOCKET_CONTEXT* lpPerSocketContext, PER_IO_CONTEXT* lpIO
 
 	if (ret == SOCKET_ERROR && WSAGetLastError() != ERROR_IO_PENDING)
 	{
-		CloseClient(lpPerSocketContext);
+		CloseClient(lpPerSocketContext, 0);
 		return;
 	}
 
@@ -558,7 +372,7 @@ void ProcessIOCPSignal(DWORD ClientIndex, DWORD dwIoSize, PER_IO_CONTEXT* lpOver
 
 	if (dwIoSize == 0)
 	{
-		CloseClient(lpPerSocketContext);
+		CloseClient(lpPerSocketContext, 0);
 		return;
 	}
 
@@ -576,162 +390,48 @@ void ProcessIOCPSignal(DWORD ClientIndex, DWORD dwIoSize, PER_IO_CONTEXT* lpOver
 // =========================================================================
 // IOCPWorkerThread - Worker Thread Entry Point
 // =========================================================================
-#ifdef __TEST
-DWORD WINAPI IOCPWorkerThread(LPVOID lpThreadParameter)
-{
-#ifdef __DEBUG_LOG
-	g_LogProc.LogAddFunc("IOCPWorkerThread STARTED");
-#endif
-	HANDLE hCompletionPort = (HANDLE)lpThreadParameter;
-
-	while (TRUE)
-	{
-		DWORD dwIoSize = 0;
-		ULONG_PTR ClientIndex = 0;
-		LPOVERLAPPED lpOverlapped = NULL;
-
-		BOOL bSuccess = GetQueuedCompletionStatus(
-			hCompletionPort, &dwIoSize, (LPDWORD)&ClientIndex, &lpOverlapped, INFINITE);
-
-		if (!bSuccess)
-		{
-			if (lpOverlapped)
-			{
-				DWORD errorcode = GetLastError();
-				if (ERROR_NETNAME_DELETED != errorcode &&
-					ERROR_CONNECTION_ABORTED != errorcode &&
-					ERROR_OPERATION_ABORTED != errorcode &&
-					ERROR_SEM_TIMEOUT != errorcode)
-				{
-					EnterCriticalSection(&g_CS);
-					g_LogProc.LogAddFuncColor(2, "Error Thread : GetQueueCompletionStatus( %d )", errorcode);
-					LeaveCriticalSection(&g_CS);
-					return FALSE;
-				}
-			}
-		}
-
-		LPPER_SOCKET_CONTEXT lpPerSocketContext = &gObj[ClientIndex].PerSocketContext;
-		lpPerSocketContext->dwIOCount--;
-
-		if (dwIoSize == 0)
-		{
-			CloseClient(lpPerSocketContext);
-			continue;
-		}
-
-		LPPER_IO_CONTEXT lpIOContext = (LPPER_IO_CONTEXT)lpOverlapped;
-
-		if (lpIOContext->IOOperation == SEND_IO)
-		{
-			lpIOContext->nSentBytes += dwIoSize;
-			if (lpIOContext->nSentBytes >= lpIOContext->nTotalBytes)
-			{
-				lpIOContext->nWaitIO = 0;
-				if (lpIOContext->nSecondOfs > 0)
-					IoSendSecond(lpPerSocketContext);
-			}
-			else
-			{
-				IoMoreSend(lpPerSocketContext);
-			}
-		}
-		else if (lpIOContext->IOOperation == RECV_IO)
-		{
-			lpIOContext->nSentBytes += dwIoSize;
-#ifdef __DEBUG_LOG
-			g_LogProc.LogAddFunc("IOCP RECV: index=%d, ioSize=%d, totalSent=%d, firstByte=%02X",
-				lpPerSocketContext->nIndex, dwIoSize, lpIOContext->nSentBytes,
-				(BYTE)lpIOContext->Buffer[0]);
-#endif
-			ParsingRecvData(lpIOContext, lpPerSocketContext->nIndex, lpPerSocketContext);
-
-			lpIOContext->nWaitIO = 0;
-			ZeroMemory(&lpIOContext->Overlapped, sizeof(OVERLAPPED));
-
-			lpIOContext->wsabuf.len = MAX_BUFF_SIZE - lpIOContext->nSentBytes;
-			lpIOContext->wsabuf.buf = lpIOContext->Buffer + lpIOContext->nSentBytes;
-			lpIOContext->IOOperation = RECV_IO;
-
-			DWORD RecvBytes = 0;
-			DWORD Flags = 0;
-			int nRet = WSARecv(lpPerSocketContext->m_socket, &lpIOContext->wsabuf, 1,
-				&RecvBytes, &Flags, &lpIOContext->Overlapped, NULL);
-
-			if (nRet == SOCKET_ERROR && WSAGetLastError() != ERROR_IO_PENDING)
-			{
-				g_LogProc.LogAddFunc("WSARecv() failed with error %d", WSAGetLastError());
-				CloseClient(lpPerSocketContext);
-				continue;
-			}
-			else
-			{
-				lpPerSocketContext->dwIOCount++;
-				lpIOContext->nWaitIO = 1;
-			}
-		}
-	}
-
-	return TRUE;
-}
-#else
-
 DWORD WINAPI IOCPWorkerThread(LPVOID lpThreadParameter)
 {
 	HANDLE	CompletionPort = (HANDLE)lpThreadParameter;
-	DWORD	dwIoSize;
-
-	DWORD	dwSendNumBytes = 0;
-	BOOL	bSuccess = FALSE;
-	int     ClientIndex;
+	DWORD	dwIoSize = 0;
+	DWORD	ClientIndex = 0;
 
 	LPOVERLAPPED			lpOverlapped = NULL;
 
-	while (TRUE)
+	for (;;)
 	{
-		bSuccess = GetQueuedCompletionStatus(
+		if (!GetQueuedCompletionStatus(
 			CompletionPort,
 			&dwIoSize,
-			(LPDWORD)&ClientIndex,
+			&ClientIndex,
 			&lpOverlapped,
-			INFINITE
-		);
-		// In IOCPWorkerThread, after GetQueuedCompletionStatus:
-		if (ClientIndex == -1 && lpOverlapped == NULL) {
-			// This is a shutdown signal
-			break;  // Exit the thread
-		}
-		if (!bSuccess)
+			INFINITE))
 		{
 			if (lpOverlapped != NULL)
 			{
 				DWORD Error = GetLastError();
 				if (Error != ERROR_NETNAME_DELETED &&
-					Error != ERROR_OPERATION_ABORTED)  // Fatal error
-				{
-					//CCSLock	cs(&g_CS);
-					GetLastErrorMsg();
-					g_LogFileError.Output("Error : File : [%s], Line : [%d]", __FILE__, __LINE__);
-					g_LogFileError.Output("Error Thread : GetQueueCompletionStatus()  (%d, %s)\n", WSAGetLastError(), ErrorMsg);
-					g_LogListBoxError.Output("Error Thread : GetQueueCompletionStatus()  (%d, %s)\n", WSAGetLastError(), ErrorMsg);
-					g_LogProc.LogAddFuncColor(2, "Error Thread : GetQueueCompletionStatus (%d, %s)", WSAGetLastError(), ErrorMsg);
-					return FALSE;
-				}
-			}
-			// FIX: Skip processing if lpOverlapped is NULL
-			if (lpOverlapped == NULL) {
-				continue;  // Skip this packet
+					Error != ERROR_OPERATION_ABORTED)
+					break;
 			}
 		}
-		// FIX: Also check here before processing
-		if (lpOverlapped == NULL) {
-			continue;
-		}
+
+		// NOTE: The original calls ProcessIOCPSignal even when
+		// GetQueuedCompletionStatus fails with a deleted/aborted connection.
 		ProcessIOCPSignal(ClientIndex, dwIoSize, (LPPER_IO_CONTEXT)lpOverlapped);
 	}
-	return TRUE;
+
+	// Fatal completion-port error: log and terminate this worker.
+	g_CS.Lock();
+	GetLastErrorMsg();
+	g_LogFileError.Output("Error : File : [%s], Line : [%d]", __FILE__, __LINE__);
+	g_LogFileError.Output("Error Thread : GetQueueCompletionStatus()  (%d, %s)\n", GetLastError(), ErrorMsg);
+	g_LogListBoxError.Output("Error Thread : GetQueueCompletionStatus()  (%d, %s)\n", GetLastError(), ErrorMsg);
+	g_LogProc.LogAddFuncColor(LOG_COLOR_RED, "Error Thread : GetQueueCompletionStatus (%d, %s)", GetLastError(), ErrorMsg);
+	g_CS.UnLock();
+
+	return 0;
 }
-#endif
 
 // =========================================================================
 // ParsingRecvData - Parse Mu Online Protocol
@@ -739,9 +439,9 @@ DWORD WINAPI IOCPWorkerThread(LPVOID lpThreadParameter)
 int ParsingRecvData(PER_IO_CONTEXT* lpIOContext, int uIndex, PER_SOCKET_CONTEXT* lpPerSocketContext)
 {
 	LPBYTE recvBuf;
-	int lOfs = 0;
 	int packetSize = 0;
-	BYTE headCode;
+	BYTE headCode = 0;
+	BYTE PacketBuffer[MAX_BUFF_SIZE];
 
 	if (lpIOContext->nSentBytes < 3)
 	{
@@ -752,6 +452,8 @@ int ParsingRecvData(PER_IO_CONTEXT* lpIOContext, int uIndex, PER_SOCKET_CONTEXT*
 	}
 
 	recvBuf = (LPBYTE)lpIOContext->Buffer;
+	memset(PacketBuffer, 0, sizeof(PacketBuffer));
+
 #ifdef __DEBUG_LOG
 	g_LogProc.LogAddFunc("ParsingRecvData: index=%d, bytes=%d, firstBytes=%02X %02X %02X %02X %02X",
 		uIndex, lpIOContext->nSentBytes,
@@ -759,21 +461,18 @@ int ParsingRecvData(PER_IO_CONTEXT* lpIOContext, int uIndex, PER_SOCKET_CONTEXT*
 #endif
 	while (true)
 	{
-		if (recvBuf[lOfs] == PMHC_BYTE)
+		if (recvBuf[0] == PMHC_BYTE)
 		{
-			LPPBMSG_HEAD pHead	= (LPPBMSG_HEAD)(recvBuf + lOfs);
-			packetSize			= pHead->size;
-			headCode			= pHead->headcode;
+			packetSize = recvBuf[1];
+			headCode = recvBuf[2];
 #ifdef __DEBUG_LOG
 			g_LogProc.LogAddFunc("Packet: C1 size=%d head=%02X", packetSize, headCode);
 #endif
 		}
-		else if (recvBuf[lOfs] == PMHC_WORD)
+		else if (recvBuf[0] == PMHC_WORD)
 		{
-			LPPWMSG_HEAD pHead	= (LPPWMSG_HEAD)(recvBuf + lOfs);
-			packetSize			= ((WORD)(pHead->sizeH) << 8);
-			packetSize			|= (WORD)(pHead->sizeL);
-			headCode			= pHead->headcode;
+			packetSize = (recvBuf[1] << 8) | recvBuf[2];
+			headCode = recvBuf[3];
 #ifdef __DEBUG_LOG
 			g_LogProc.LogAddFunc("Packet: C2 size=%d head=%02X", packetSize, headCode);
 #endif
@@ -781,90 +480,79 @@ int ParsingRecvData(PER_IO_CONTEXT* lpIOContext, int uIndex, PER_SOCKET_CONTEXT*
 		else
 		{
 			// Invalid header
-			EnterCriticalSection(&g_CS);
-			//g_CS.Lock();
+			g_CS.Lock();
 			g_LogFileError.Output("Invalid PacketHeader: Header:[%d], size:[%d] IP:[%s]\n",
-				recvBuf[lOfs], lpIOContext->nSentBytes, gObj[uIndex].m_Ip);
-			g_LogProc.LogAddFunc("Invalid PacketHeader: Header:[%d], size:[%d] IP:[%s]",
-				recvBuf[lOfs], lpIOContext->nSentBytes, gObj[uIndex].m_Ip);
-			LeaveCriticalSection(&g_CS);
-			//g_CS.UnLock();
+				recvBuf[0], lpIOContext->nSentBytes, gObj[uIndex].m_Ip);
+			g_LogProc.LogAddFuncColor(LOG_COLOR_RED, "Invalid PacketHeader : Header:[%d], size:[%d] IP:[%s]",
+				recvBuf[0], lpIOContext->nSentBytes, gObj[uIndex].m_Ip);
+			g_CS.UnLock();
+
+			lpIOContext->nSentBytes = 0;
 
 			// DDoS: track invalid packets
-			DWORD clientIP = *reinterpret_cast<DWORD*>(&gObj[uIndex].m_IpBytes);
-			if (g_CsIpAddrMng.IncIpAddrInvalidPacket(&clientIP) == 1 &&
+			if (g_CsIpAddrMng.IncIpAddrInvalidPacket(gObj[uIndex].m_IpDword) == 1 &&
 				strcmp(gObj[uIndex].m_Ip, DDOSNoCheckingIpAddress) != 0)
 			{
 				struct linger ling = { 1, 0 };
 				setsockopt(lpPerSocketContext->m_socket, SOL_SOCKET, SO_LINGER,
-					reinterpret_cast<const char*>(&ling), sizeof(ling));
-
-				g_LogProc.LogAddFuncColor(LOG_COLOR_RED,"[DDOS] Error: Abnormal Packet (Invalid Header) > %d (IP:%s)",
-					g_dwMaxInvalidPackets, gObj[uIndex].m_Ip);
-
-				g_LogFileError.Output("[DDOS] Error: Abnormal Packet (Invalid Header) > %d (IP:%s)",
-					g_dwMaxInvalidPackets, gObj[uIndex].m_Ip);
+					(char*)&ling, sizeof(ling));
+				g_LogProc.LogAddFuncColor(LOG_COLOR_RED,
+					"[DDOS] Error : Abnormal Packet (Invalid Packet Header) > %d (IP:%d.%d.%d.%d)",
+					g_dwMaxInvalidPackets, gObj[uIndex].m_IpBytes[0], gObj[uIndex].m_IpBytes[1],
+					gObj[uIndex].m_IpBytes[2], gObj[uIndex].m_IpBytes[3]);
+				g_LogFileError.Output(
+					"[DDOS] Error : Abnormal Packet (Invalid Packet Header) > %d (IP:%d.%d.%d.%d)",
+					g_dwMaxInvalidPackets, gObj[uIndex].m_IpBytes[0], gObj[uIndex].m_IpBytes[1],
+					gObj[uIndex].m_IpBytes[2], gObj[uIndex].m_IpBytes[3]);
+				CloseClient(lpPerSocketContext, 0);
 			}
-#ifdef __DEBUG_LOG
-			g_LogProc.LogAddFunc("Invalid header: %02X at offset %d", recvBuf[lOfs], lOfs);
-#endif
-			lpIOContext->nSentBytes = 0;
 			return 0;
 		}
 
 		if (packetSize <= 0)
 		{
-			EnterCriticalSection(&g_CS);
-			//g_CS.Lock();
+			g_CS.Lock();
 			g_LogFileError.Output("Error : File : [%s], Line : [%d]", __FILE__, __LINE__);
-			g_LogFileError.Output("Error: (size <= 0) Packet size [%d]\n", packetSize);
-			g_LogProc.LogAddFunc("error: Packet size [%d]", packetSize);
-			LeaveCriticalSection(&g_CS);
-			//g_CS.UnLock();
+			g_LogFileError.Output("Error : (size <= 0) Packet size [%d]\n", packetSize);
+			g_LogProc.LogAddFunc("error : Packet size [%d]", packetSize);
+			g_CS.UnLock();
 			return 0;
 		}
 
-		if (packetSize <= lpIOContext->nSentBytes)
+		// NOTE: The original simply returns on an incomplete packet; the
+		// remaining bytes are left in place for the next WSARecv.
+		if (packetSize > lpIOContext->nSentBytes)
+			return 0;
+
+		// DDoS: track packets/sec
+		if (g_CsIpAddrMng.IncIpAddrPacketPerSec(gObj[uIndex].m_IpDword) == 1 &&
+			strcmp(gObj[uIndex].m_Ip, DDOSNoCheckingIpAddress) != 0)
 		{
-			// DDoS: track packets/sec
-			DWORD clientIP = *reinterpret_cast<DWORD*>(&gObj[uIndex].m_IpBytes);
-			if (g_CsIpAddrMng.IncIpAddrPacketPerSec(&clientIP) == 1 &&
-				strcmp(gObj[uIndex].m_Ip, DDOSNoCheckingIpAddress) != 0)
-			{
-				struct linger ling = { 1, 0 };
-				setsockopt(lpPerSocketContext->m_socket, SOL_SOCKET, SO_LINGER, reinterpret_cast<const char*>(&ling), sizeof(ling));
+			struct linger ling = { 1, 0 };
+			setsockopt(lpPerSocketContext->m_socket, SOL_SOCKET, SO_LINGER, (char*)&ling, sizeof(ling));
 
-				g_LogProc.LogAddFuncColor(LOG_COLOR_RED,"[DDOS] Error: Packet/Sec > %d (IP:%s)", g_dwMaxPacketPerSec, gObj[uIndex].m_Ip);
-				g_LogFileError.Output("[DDOS] Error: Packet/Sec > %d (IP:%s)", g_dwMaxPacketPerSec, gObj[uIndex].m_Ip);
+			g_LogProc.LogAddFuncColor(LOG_COLOR_RED, "[DDOS] Error : Packet/Sec > %d (IP:%d.%d.%d.%d)",
+				g_dwMaxPacketPerSec, gObj[uIndex].m_IpBytes[0], gObj[uIndex].m_IpBytes[1],
+				gObj[uIndex].m_IpBytes[2], gObj[uIndex].m_IpBytes[3]);
+			g_LogFileError.Output("[DDOS] Error : Packet/Sec > %d (IP:%d.%d.%d.%d)",
+				g_dwMaxPacketPerSec, gObj[uIndex].m_IpBytes[0], gObj[uIndex].m_IpBytes[1],
+				gObj[uIndex].m_IpBytes[2], gObj[uIndex].m_IpBytes[3]);
 
-				CloseClient(lpPerSocketContext);
-				return 0;
-			}
-#ifdef __DEBUG_LOG
-			g_LogProc.LogAddFunc("Calling ProtocolCore: head=%02X size=%d", headCode, packetSize);
-#endif
-			// Dispatch to protocol handler
-			ProtocolCore(headCode, &recvBuf[lOfs], packetSize, static_cast<short>(uIndex));
-
-			lOfs += packetSize;
-			lpIOContext->nSentBytes -= packetSize;
-
-			if (lpIOContext->nSentBytes <= 0)
-				break;
+			CloseClient(lpPerSocketContext, 0);
+			return 0;
 		}
-		else
-		{
+
 #ifdef __DEBUG_LOG
-			g_LogProc.LogAddFunc("Incomplete packet: need %d have %d", packetSize, lpIOContext->nSentBytes);
+		g_LogProc.LogAddFunc("Calling ProtocolCore: head=%02X size=%d", headCode, packetSize);
 #endif
-			// Incomplete packet - shift remaining data
-			if (lOfs > 0 && lpIOContext->nSentBytes > 0)
-				memmove(recvBuf, &recvBuf[lOfs], lpIOContext->nSentBytes);
-			break;
-		}
+		memcpy(PacketBuffer, recvBuf, packetSize);
+		memmove(recvBuf, recvBuf + packetSize, lpIOContext->nSentBytes - packetSize);
+		lpIOContext->nSentBytes -= packetSize;
+
+		// Dispatch to protocol handler
+		ProtocolCore(headCode, PacketBuffer, packetSize, static_cast<short>(uIndex));
 	}
-
-	return 1;
+	return 0;
 }
 
 // =========================================================================
@@ -872,7 +560,7 @@ int ParsingRecvData(PER_IO_CONTEXT* lpIOContext, int uIndex, PER_SOCKET_CONTEXT*
 // =========================================================================
 int IoSend(int aIndex, LPBYTE lpMsg, DWORD size)
 {
-	if (aIndex >= MAX_CONNECTOBJECT)
+	if (aIndex < 0 || aIndex > MAX_CONNECTOBJECT - 1)
 		return 0;
 
 	PER_SOCKET_CONTEXT* pPerSocketContext = &gObj[aIndex].PerSocketContext;
@@ -883,14 +571,11 @@ int IoSend(int aIndex, LPBYTE lpMsg, DWORD size)
 
 	if (size > MAX_BUFF_SIZE)
 	{
-		EnterCriticalSection(&g_CS);
-		//g_CS.Lock();
-		g_LogFileError.Output("Error: File: [%s], Line: [%d]", __FILE__, __LINE__);
-		g_LogFileError.Output("Error: Max msg(%d) %s %d\n", size, __FILE__, __LINE__);
-
-		g_LogProc.LogAddFuncColor(LOG_COLOR_GREEN, "Error: Max msg(%d) %s %d", size, __FILE__, __LINE__);
-		LeaveCriticalSection(&g_CS);
-		//g_CS.UnLock();
+		g_CS.Lock();
+		g_LogFileError.Output("Error : File : [%s], Line : [%d]", __FILE__, __LINE__);
+		g_LogFileError.Output("Error : Max msg(%d) %s %d\n", size, __FILE__, __LINE__);
+		g_LogProc.LogAddFuncColor(LOG_COLOR_GREEN, "Error : Max msg(%d) %s %d", size, __FILE__, __LINE__);
+		g_CS.UnLock();
 		CloseClient(aIndex);
 		return 0;
 	}
@@ -901,16 +586,10 @@ int IoSend(int aIndex, LPBYTE lpMsg, DWORD size)
 	{
 		if (pSendContext->nSecondOfs + size > MAX_BUFF_SIZE - 1)
 		{
-			EnterCriticalSection(&g_CS);
-			//g_CS.Lock();
-			g_LogFileError.Output("Error: File: [%s], Line: [%d]", __FILE__, __LINE__);
-			g_LogFileError.Output("BUFFER OVER, IOSIZE=[%d] Total=[%d] Second=[%d]\n",
+			g_CS.Lock();
+			g_LogProc.LogAddFunc("BUFFER OVER, IOSIZE = [%d] Total Size = [%d] Second Size = [%d]",
 				size, pSendContext->nTotalBytes, pSendContext->nSecondOfs + size);
-
-			g_LogProc.LogAddFunc("BUFFER OVER, IOSIZE=[%d] Total=[%d] Second=[%d]",
-				size, pSendContext->nTotalBytes, pSendContext->nSecondOfs + size);
-			LeaveCriticalSection(&g_CS);
-			//g_CS.UnLock();
+			g_CS.UnLock();
 
 			pSendContext->nWaitIO = 0;
 			CloseClient(aIndex);
@@ -935,13 +614,11 @@ int IoSend(int aIndex, LPBYTE lpMsg, DWORD size)
 
 	if (pSendContext->nTotalBytes + size > MAX_BUFF_SIZE - 1)
 	{
-		EnterCriticalSection(&g_CS);
-		//g_CS.Lock();
-		g_LogFileError.Output("Error: File: [%s], Line: [%d]", __FILE__, __LINE__);
-		g_LogFileError.Output("error-L2_2 MAX BUFFER OVER\n");
-		g_LogProc.LogAddFunc("error-L2_2 MAX BUFFER OVER");
-		LeaveCriticalSection(&g_CS);
-		//g_CS.UnLock();
+		g_CS.Lock();
+		g_LogFileError.Output("Error : File : [%s], Line : [%d]", __FILE__, __LINE__);
+		g_LogFileError.Output("error-L2_2 MAX BUFFER OVER (IP:%s)\n", gObj[aIndex].m_Ip);
+		g_LogProc.LogAddFunc("error-L2_2 MAX BUFFER OVER (IP:%s)", gObj[aIndex].m_Ip);
+		g_CS.UnLock();
 
 		pSendContext->nWaitIO = 0;
 		CloseClient(aIndex);
@@ -959,24 +636,30 @@ int IoSend(int aIndex, LPBYTE lpMsg, DWORD size)
 	DWORD sendBytes = 0;
 	int ret = WSASend(pPerSocketContext->m_socket, &pSendContext->wsabuf, 1, &sendBytes, 0, &pSendContext->Overlapped, NULL);
 
-	if (ret == SOCKET_ERROR && WSAGetLastError() != ERROR_IO_PENDING)
+	if (ret == SOCKET_ERROR)
 	{
-		EnterCriticalSection(&g_CS);
-		//g_CS.Lock();
-		GetLastErrorMsg();
 		int Error = WSAGetLastError();
-		g_LogFileError.Output("Error: File: [%s], Line: [%d]", __FILE__, __LINE__);
-		g_LogFileError.Output("WSASend() failed with error %d, %s\n", Error, ErrorMsg);
-		if (Error != 10038)
-			g_LogProc.LogAddFunc("WSASend() failed with error %d, %s", Error, ErrorMsg);
-		LeaveCriticalSection(&g_CS);
-		//g_CS.UnLock();
+		if (Error != ERROR_IO_PENDING)
+		{
+			g_CS.Lock();
+			GetLastErrorMsg();
+			g_LogFileError.Output("Error : File : [%s], Line : [%d]", __FILE__, __LINE__);
+			g_LogFileError.Output("WSASend() failed with error %d, %s\n", Error, ErrorMsg);
+			if (Error != 10038)
+				g_LogProc.LogAddFunc("WSASend() failed with error %d, %s", Error, ErrorMsg);
+			g_CS.UnLock();
 
-		CloseClient(aIndex);
-		return 0;
+			CloseClient(aIndex);
+			return 0;
+		}
+	}
+	else
+	{
+		// NOTE: The original increments dwIOCount only when WSASend completes
+		// synchronously; a pending (WSA_IO_PENDING) send is not counted.
+		InterlockedIncrement(&pPerSocketContext->dwIOCount);
 	}
 
-	InterlockedIncrement(&pPerSocketContext->dwIOCount);
 	pSendContext->nWaitIO = 1;
 
 	return 1;
@@ -990,7 +673,12 @@ int IoSendSecond(PER_SOCKET_CONTEXT* lpPerSocketContext)
 	int aIndex = lpPerSocketContext->nIndex;
 	PER_IO_CONTEXT* pSendContext = &lpPerSocketContext->IOContext[SEND_IO];
 
-	if (pSendContext->nWaitIO > 0 || pSendContext->nSecondOfs <= 0)
+	if (pSendContext->nWaitIO > 0)
+		return 0;
+
+	pSendContext->nTotalBytes = 0;
+
+	if (pSendContext->nSecondOfs <= 0)
 		return 0;
 
 	memcpy(pSendContext->Buffer, pSendContext->BufferSecond, pSendContext->nSecondOfs);
@@ -1005,24 +693,29 @@ int IoSendSecond(PER_SOCKET_CONTEXT* lpPerSocketContext)
 	DWORD sendBytes = 0;
 	int ret = WSASend(lpPerSocketContext->m_socket, &pSendContext->wsabuf, 1, &sendBytes, 0, &pSendContext->Overlapped, NULL);
 
-	if (ret == SOCKET_ERROR && WSAGetLastError() != ERROR_IO_PENDING)
+	if (ret == SOCKET_ERROR)
 	{
-		EnterCriticalSection(&g_CS);
-		//g_CS.Lock();
-		GetLastErrorMsg();
 		int Error = WSAGetLastError();
-
-		g_LogFileError.Output("Error: File: [%s], Line: [%d]", __FILE__, __LINE__);
-		g_LogFileError.Output("WSASend() failed with error %d, %s", Error, ErrorMsg);
-		if (Error != 10038)
-			g_LogProc.LogAddFunc("WSASend() failed with error %d, %s", Error, ErrorMsg);
-		LeaveCriticalSection(&g_CS);
-		//g_CS.UnLock();
-		CloseClient(aIndex);
-		return 0;
+		if (Error != ERROR_IO_PENDING)
+		{
+			g_CS.Lock();
+			GetLastErrorMsg();
+			g_LogFileError.Output("Error : File : [%s], Line : [%d]", __FILE__, __LINE__);
+			g_LogFileError.Output("WSASend() failed with error %d, %s", Error, ErrorMsg);
+			if (Error != 10038)
+				g_LogProc.LogAddFunc("WSASend() failed with error %d, %s", Error, ErrorMsg);
+			g_CS.UnLock();
+			CloseClient(aIndex);
+			return 0;
+		}
+	}
+	else
+	{
+		// NOTE: Same original quirk as IoSend - pending sends do not increment
+		// the pending-IO counter.
+		InterlockedIncrement(&lpPerSocketContext->dwIOCount);
 	}
 
-	InterlockedIncrement(&lpPerSocketContext->dwIOCount);
 	pSendContext->nWaitIO = 1;
 
 	return 1;
@@ -1034,18 +727,17 @@ int IoSendSecond(PER_SOCKET_CONTEXT* lpPerSocketContext)
 int IoMoreSend(PER_SOCKET_CONTEXT* lpPerSocketContext)
 {
 	PER_IO_CONTEXT* pSendContext = &lpPerSocketContext->IOContext[SEND_IO];
-	int remaining = pSendContext->nTotalBytes - pSendContext->nSentBytes;
+	int aIndex = lpPerSocketContext->nIndex;
 
-	if (remaining <= 0)
+	if (pSendContext->nTotalBytes - pSendContext->nSentBytes < 0)
 		return 0;
 
-	EnterCriticalSection(&g_CS);
-	//g_CS.Lock();
-	g_LogProc.LogAddFunc("%d Bytes Remain, Send Again", remaining);
-	LeaveCriticalSection(&g_CS);
-	//g_CS.UnLock();
+	g_CS.Lock();
+	g_LogProc.LogAddFunc("%d Bytes Remain, Send Again", pSendContext->nTotalBytes - pSendContext->nSentBytes);
+	g_CS.UnLock();
+
 	pSendContext->wsabuf.buf = pSendContext->Buffer + pSendContext->nSentBytes;
-	pSendContext->wsabuf.len = remaining;
+	pSendContext->wsabuf.len = pSendContext->nTotalBytes - pSendContext->nSentBytes;
 	pSendContext->IOOperation = SEND_IO;
 
 	DWORD sendBytes = 0;
@@ -1054,28 +746,27 @@ int IoMoreSend(PER_SOCKET_CONTEXT* lpPerSocketContext)
 	if (ret == SOCKET_ERROR)
 	{
 		int Error = WSAGetLastError();
-		if (Error == ERROR_IO_PENDING)
+		if (Error != ERROR_IO_PENDING)
 		{
-			InterlockedIncrement(&lpPerSocketContext->dwIOCount);
-			pSendContext->nWaitIO = 1;
-			return 1;
+			g_CS.Lock();
+			GetLastErrorMsg();
+			g_LogFileError.Output("Error : File : [%s], Line : [%d]", __FILE__, __LINE__);
+			g_LogFileError.Output("WSASend() failed with error %d, %s", Error, ErrorMsg);
+			if (Error != 10038)
+				g_LogProc.LogAddFunc("WSASend() failed with error %d, %s", Error, ErrorMsg);
+			g_CS.UnLock();
+
+			CloseClient(aIndex);
+			return 0;
 		}
-
-		EnterCriticalSection(&g_CS);
-		//g_CS.Lock();
-		GetLastErrorMsg();
-		g_LogFileError.Output("Error: File: [%s], Line: [%d]", __FILE__, __LINE__);
-		g_LogFileError.Output("WSASend() failed with error %d, %s", Error, ErrorMsg);
-		if (Error != 10038)
-			g_LogProc.LogAddFunc("WSASend() failed with error %d, %s", Error, ErrorMsg);
-		LeaveCriticalSection(&g_CS);
-		//g_CS.UnLock();
-
-		CloseClient(lpPerSocketContext->nIndex);
-		return 0;
+	}
+	else
+	{
+		// NOTE: Same original quirk - only synchronous completion increments
+		// the pending-IO counter.
+		InterlockedIncrement(&lpPerSocketContext->dwIOCount);
 	}
 
-	InterlockedIncrement(&lpPerSocketContext->dwIOCount);
 	pSendContext->nWaitIO = 1;
 
 	return 1;
@@ -1084,45 +775,40 @@ int IoMoreSend(PER_SOCKET_CONTEXT* lpPerSocketContext)
 // =========================================================================
 // UpdateCompletionPort - Associate Socket with IOCP
 // =========================================================================
-BOOL UpdateCompletionPort(HANDLE FileHandle, ULONG_PTR CompletionKey)
+int UpdateCompletionPort(SOCKET s, int nIndex, int bAdd)
 {
 	HANDLE IoCompletionPort;
 
-	IoCompletionPort = CreateIoCompletionPort(FileHandle, g_CompletionPort, CompletionKey, 0);
+	IoCompletionPort = CreateIoCompletionPort((HANDLE)s, g_CompletionPort, nIndex, 0);
 #ifdef __DEBUG_LOG
 	g_LogProc.LogAddFunc("Associate socket: h=%p, key=%d, result=%p",
-		FileHandle, CompletionKey, IoCompletionPort);  
+		s, nIndex, IoCompletionPort);
 #endif
 	if (IoCompletionPort)
 	{
 		g_CompletionPort = IoCompletionPort;
-		InterlockedExchange(&gObj[CompletionKey].PerSocketContext.dwIOCount, 0);
-		return TRUE;
+		InterlockedExchange(&gObj[nIndex].PerSocketContext.dwIOCount, 0);
+		return 1;
 	}
 
-	EnterCriticalSection(&g_CS);
-	//g_CS.Lock();
+	g_CS.Lock();
 	GetLastErrorMsg();
-	DWORD Error = GetLastError();
+	g_LogFileError.Output("Error : File : [%s], Line : [%d]", __FILE__, __LINE__);
+	g_LogFileError.Output("CreateIoCompletionPort: %d, %s\n", GetLastError(), ErrorMsg);
+	g_LogProc.LogAddFuncColor(LOG_COLOR_RED, "CreateIoCompletionPort Error : %d, %s", GetLastError(), ErrorMsg);
+	g_LogProc.LogAddFuncColor(LOG_COLOR_RED, "SOCKET ID : %d, ClientIndex = %d", s, nIndex);
+	g_CS.UnLock();
 
-	g_LogFileError.Output("Error: File: [%s], Line: [%d]", __FILE__, __LINE__);
-	g_LogFileError.Output("CreateIoCompletionPort: %d, %s\n", Error, ErrorMsg);
-
-	g_LogProc.LogAddFuncColor(LOG_COLOR_RED, "CreateIoCompletionPort Error: %d, %s", Error, ErrorMsg);
-	g_LogProc.LogAddFuncColor(LOG_COLOR_RED, "SOCKET ID: %d, ClientIndex = %d", FileHandle, CompletionKey);
-
-	LeaveCriticalSection(&g_CS);
-	//g_CS.UnLock();
-	return FALSE;
+	return 0;
 }
 
 // =========================================================================
 // CloseClient - Cleanup Connection
 // =========================================================================
-void CloseClient(PER_SOCKET_CONTEXT* lpPerSocketContext)
+void CloseClient(PER_SOCKET_CONTEXT* lpPerSocketContext, int bAdd)
 {
-	unsigned int index = lpPerSocketContext->nIndex;
-	if (index >= MAX_CONNECTOBJECT)
+	int index = lpPerSocketContext->nIndex;
+	if (index < 0 || index > MAX_CONNECTOBJECT - 1)
 		return;
 
 	CCSLock cs(&gObj[index].m_Lock);
@@ -1142,106 +828,98 @@ void CloseClient(PER_SOCKET_CONTEXT* lpPerSocketContext)
 
 void CloseClient(int index)
 {
-	if (index >= MAX_CONNECTOBJECT)
+	if (index < 0 || index > MAX_CONNECTOBJECT - 1)
 		return;
 
 	CCSLock cs(&gObj[index].m_Lock);
 
-	if (gObj[index].Connected != 0 && gObj[index].m_socket != INVALID_SOCKET)
+	// NOTE: Unlike CloseClient(PER_SOCKET_CONTEXT*, int), the original does not
+	// call gObjDel() here; the connection object is released later by the IOCP path.
+	if (gObj[index].Connected != 0)
 	{
 		closesocket(gObj[index].m_socket);
 		gObj[index].m_socket = INVALID_SOCKET;
 	}
-
-	gObjDel(index);
 }
 
-void PIM_WORKERPROC(int WorkerID, int Param, _PER_PIM_CONTEXT* pData)
+void PIM_WORKERPROC(int WorkerID, int Param, void* pData)
 {
-	if (!pData)
+	_PER_PIM_CONTEXT* lpPerPim = (_PER_PIM_CONTEXT*)pData;
+
+	if (lpPerPim == NULL)
 		return;
 
-	SOCKET s = pData->Socket;
+	SOCKET s = lpPerPim->Socket;
 
-	struct in_addr addr;
-	addr.s_addr = pData->IP;
+	int index = gObjAdd(s, lpPerPim->IpAddr);
 
-	// Add to connection pool
-	int nIndex = gObjAdd(s, &addr);
-
-
-	if (nIndex == -1)
+	if (index == -1)
 	{
 		closesocket(s);
 		return;
 	}
 
-	// Associate with IOCP
-	if (!UpdateCompletionPort((HANDLE)s, nIndex))
+	if (!UpdateCompletionPort(s, index, 1))
 	{
-		g_LogProc.LogAddFuncColor(2, "CreateIoCompletionPort failed with error %d", GetLastError());
+		g_CS.Lock();
+		GetLastErrorMsg();
+		g_LogFileError.Output("Error : File : [%s], Line : [%d]", __FILE__, __LINE__);
+		g_LogFileError.Output("CreateIoCompletionPort failed with error %d, %s\n", GetLastError(), ErrorMsg);
+		g_LogProc.LogAddFuncColor(LOG_COLOR_RED, "CreateIoCompletionPort failed with error %d", GetLastError());
+		g_CS.UnLock();
 		return;
 	}
 
-	// Get the object's IO context
-	PER_SOCKET_CONTEXT* pCtx = &gObj[nIndex].PerSocketContext;
+	PER_SOCKET_CONTEXT* lpSocket = &gObj[index].PerSocketContext;
 
-	// Initialize RECV context
-	pCtx->IOContext[RECV_IO].wsabuf.buf = pCtx->IOContext[RECV_IO].Buffer;
-	pCtx->IOContext[RECV_IO].wsabuf.len = MAX_BUFF_SIZE;
-	pCtx->IOContext[RECV_IO].nTotalBytes = 0;
-	pCtx->IOContext[RECV_IO].nSentBytes = 0;
-	pCtx->IOContext[RECV_IO].nWaitIO = 0;
-	pCtx->IOContext[RECV_IO].nSecondOfs = 0;
-	pCtx->IOContext[RECV_IO].IOOperation = RECV_IO;
+	// RECV context
+	lpSocket->IOContext[RECV_IO].wsabuf.buf = lpSocket->IOContext[RECV_IO].Buffer;
+	lpSocket->IOContext[RECV_IO].wsabuf.len = MAX_BUFF_SIZE;
+	lpSocket->IOContext[RECV_IO].nTotalBytes = 0;
+	lpSocket->IOContext[RECV_IO].nSentBytes = 0;
+	lpSocket->IOContext[RECV_IO].nWaitIO = 0;
+	lpSocket->IOContext[RECV_IO].nSecondOfs = 0;
+	lpSocket->IOContext[RECV_IO].IOOperation = RECV_IO;
 
-	// Initialize SEND context
-	pCtx->IOContext[SEND_IO].wsabuf.buf = pCtx->IOContext[SEND_IO].Buffer;
-	pCtx->IOContext[SEND_IO].wsabuf.len = MAX_BUFF_SIZE;
-	pCtx->IOContext[SEND_IO].nTotalBytes = 0;
-	pCtx->IOContext[SEND_IO].nSentBytes = 0;
-	pCtx->IOContext[SEND_IO].nWaitIO = 0;
-	pCtx->IOContext[SEND_IO].nSecondOfs = 0;
-	pCtx->IOContext[SEND_IO].IOOperation = SEND_IO;
+	// SEND context
+	lpSocket->IOContext[SEND_IO].wsabuf.buf = lpSocket->IOContext[SEND_IO].Buffer;
+	lpSocket->IOContext[SEND_IO].wsabuf.len = MAX_BUFF_SIZE;
+	lpSocket->IOContext[SEND_IO].nTotalBytes = 0;
+	lpSocket->IOContext[SEND_IO].nSentBytes = 0;
+	lpSocket->IOContext[SEND_IO].nWaitIO = 0;
+	lpSocket->IOContext[SEND_IO].nSecondOfs = 0;
+	lpSocket->IOContext[SEND_IO].IOOperation = SEND_IO;
 
-	// Store socket and index
-	pCtx->m_socket = s;
-	pCtx->nIndex = nIndex;
+	lpSocket->m_socket = s;
+	lpSocket->nIndex = index;
 
-	// Post initial receive
-	DWORD recvBytes = 0, flags = 0;
-	int ret = WSARecv(
+	DWORD recvBytes = 0;
+	DWORD flags = 0;
+
+	if (WSARecv(
 		s,
-		&pCtx->IOContext[RECV_IO].wsabuf,
+		&lpSocket->IOContext[RECV_IO].wsabuf,
 		1,
 		&recvBytes,
 		&flags,
-		&pCtx->IOContext[RECV_IO].Overlapped,
-		NULL);
-#ifdef __DEBUG_LOG
-	g_LogProc.LogAddFunc("=== Object Layout Debug ===");
-	g_LogProc.LogAddFunc("OBJECTSTRUCT size: %d (need 24748)", sizeof(OBJECTSTRUCT));
-	g_LogProc.LogAddFunc("PER_IO_CONTEXT size: %d", sizeof(PER_IO_CONTEXT));
-	g_LogProc.LogAddFunc("PER_SOCKET_CONTEXT size: %d", sizeof(PER_SOCKET_CONTEXT));
-	g_LogProc.LogAddFunc("IOContext[0] buf: %p", pCtx->IOContext[0].wsabuf.buf);
-	g_LogProc.LogAddFunc("IOContext[1] buf: %p", pCtx->IOContext[1].wsabuf.buf);
-	g_LogProc.LogAddFunc("IOContext[0] len: %d", pCtx->IOContext[0].wsabuf.len);
-	g_LogProc.LogAddFunc("IOContext[1] len: %d", pCtx->IOContext[1].wsabuf.len);
-	g_LogProc.LogAddFunc("PerSocketContext offset in obj: %d", (int)((char*)pCtx - (char*)&gObj[nIndex]));
-#endif
-	int nError = WSAGetLastError();
-
-	if (ret != SOCKET_ERROR || nError == WSA_IO_PENDING)
+		&lpSocket->IOContext[RECV_IO].Overlapped,
+		NULL) != SOCKET_ERROR
+		|| WSAGetLastError() == WSA_IO_PENDING)
 	{
-		pCtx->IOContext[RECV_IO].nWaitIO = 1;
-		InterlockedIncrement(&pCtx->dwIOCount);
-		SCConnectResultSend(1, nIndex);
+		lpSocket->IOContext[RECV_IO].nWaitIO = 1;
+		++lpSocket->dwIOCount;
+		SCConnectResultSend(1, index);
 	}
 	else
 	{
-		g_LogProc.LogAddFunc("IocpServerWorker :: WSARecv() failed with error %d", nError);
-		g_LogProc.LogAddFunc("IocpServerWorker :: ClientIndex =  %d", nIndex);
-		pCtx->IOContext[RECV_IO].nWaitIO = 4;
-		CloseClient(pCtx);
+		g_CS.Lock();
+		GetLastErrorMsg();
+		g_LogFileError.Output("Error : File : [%s], Line : [%d]", __FILE__, __LINE__);
+		g_LogFileError.Output("IocpServerWorker :: WSARecv() failed with error %d, %s\n", WSAGetLastError(), ErrorMsg);
+		g_LogProc.LogAddFunc("IocpServerWorker :: WSARecv() failed with error %d", WSAGetLastError());
+		g_LogProc.LogAddFunc("IocpServerWorker :: ClientIndex =  %d", index);
+		g_CS.UnLock();
+		lpSocket->IOContext[RECV_IO].nWaitIO = 4;
+		CloseClient(lpSocket, 0);
 	}
 }

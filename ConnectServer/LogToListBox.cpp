@@ -1,6 +1,8 @@
 #include "StdAfx.h"
 #include "LogToListBox.h"
 
+#include "CS.h"
+
 // =========================================================================
 // Constructor
 // =========================================================================
@@ -13,7 +15,7 @@ CLogToListBox::CLogToListBox(int bWithDate, HWND hListBox)
     ZeroMemory(m_szOutputBuffer, sizeof(m_szOutputBuffer));
 
     // Initialize critical section for thread-safe logging
-    InitializeCriticalSection(&m_cs);
+    InitializeCriticalSection(&m_LogToListBoxcs);
 }
 
 // =========================================================================
@@ -22,7 +24,7 @@ CLogToListBox::CLogToListBox(int bWithDate, HWND hListBox)
 CLogToListBox::~CLogToListBox()
 {
     // Clean up synchronization object
-    DeleteCriticalSection(&m_cs);
+    DeleteCriticalSection(&m_LogToListBoxcs);
 }
 
 // =========================================================================
@@ -104,7 +106,7 @@ void CLogToListBox::Output(const char* format, ...)
     va_end(args);
 
     // Thread-safe section: format and send to UI
-    EnterCriticalSection(&m_cs);
+    EnterCriticalSection(&m_LogToListBoxcs);
 
     // Build output string with optional timestamp
     FormatOutput(m_szFormatBuffer);
@@ -115,11 +117,11 @@ void CLogToListBox::Output(const char* format, ...)
     // Auto-scroll to bottom
     AutoScroll();
 
-    LeaveCriticalSection(&m_cs);
+    LeaveCriticalSection(&m_LogToListBoxcs);
 
     // Trigger error log alarm (UI alert for new entries)
     // Note: Called outside critical section to avoid potential deadlock
-    //StartErrorLogAlarm();
+    StartErrorLogAlarm();
 }
 
 // =========================================================================

@@ -3,6 +3,7 @@
 #ifndef __CS_H__
 #define __CS_H__
 #include "StdAfx.h"
+#include <CommCtrl.h>
 #include "WzMultiCastSock.h"
 
 #define CONNECTSERVER_PORT			44405		// Connect Server Port
@@ -15,12 +16,12 @@
 // Global Variables
 // =========================================================================
 extern int g_iPERF_IDX_MEM;
+extern int g_iPERF_IDX_CPU;
 extern BYTE ClientV3, ClientV1, ClientV2;
 extern char FtpServerIpAddress_LocalTest[];
 extern char FtpServerIpAddress[];
 extern WORD HTTPServerPort;
 extern CRITICAL_SECTION gameservercriti;
-extern int g_iPERF_IDX_CPU;
 extern CRITICAL_SECTION g_critCSINFO_LIST;
 extern char HTTPServerFileName[];
 extern char FtpServerFileName[];
@@ -57,65 +58,56 @@ extern int g_bMultiCastOn;
 extern char g_szMC_IPADDR[];
 extern char g_szPB_IPADDR[];
 extern int g_iLV_ItemNo;
-extern BOOL g_bMULTICAST_LIST_REMAKE;
-extern BOOL g_bGameServerLive;          // Game server heartbeat active
+extern int g_bMULTICAST_LIST_REMAKE;
+extern bool g_bGameServerLive;          // Game server heartbeat active
 
 
 #pragma pack(push, 1)
 struct PMSG_CCS_INFOLIST
 {
     int   ServerCode;       // +0
-    BYTE  ServerType;       // +4
-    BYTE  unk5;
-    BYTE  unk6;
-    BYTE  unk7;
-
+    int   ServerType;       // +4 (BYTE Percent zero-extended)
     WORD  MaxUserCount;     // +8
-    WORD  PCbangCount;    // +10
+    WORD  FreeUserSlots;    // +10 (MaxUserCount - UserCount)
     WORD  UserCount;        // +12
     WORD  ServerFlag;       // +14
 };
 
 struct PMSG_CCS_INFOSHARE
 {
-    BYTE c;                 // C2
-    BYTE sizeH;
-    BYTE sizeL;
-    BYTE head;              // 03
+    PWMSG_HEAD h;           // +0  C2 sizeH sizeL headcode(3)
+    DWORD  Unknown4;        // +4  never written by MakeCcsShareInfoBuffer
+    int  JoinServerCount;   // +8
+    int  ShareCount;        // +12
 
-    int  JoinServerCount;   // +4
-    int  ShareCount;        // +8
-
-    PMSG_CCS_INFOLIST Entry[100];
+    PMSG_CCS_INFOLIST Entry[MAX_GAMESERVERLIST];   // +16
 };
 #pragma pack(pop)
 
 extern PMSG_CCS_INFOSHARE g_cCCS_INFOSHARE_BUF;
-//#pragma pack(push, 1)
 
-typedef struct
+struct GameServerList_Struct
 {
-    BOOL  Live;
-    DWORD ServerCode;
-    char  Name[20];
-    char  IpAddress[16];
-    WORD  Port;
-    BYTE  Percent;
-    BYTE  ServerType;
-    DWORD LiveTime;
-    WORD  MaxUserCount;
-    WORD  PCbangCount;
-    WORD  UserCount;
-    BYTE  bShow;
-    WORD  ServerFlag;
-    BYTE  State;
-    char  ServerVersion[32];
-    char  ClientVersion[32];
-    char  DisplayName[80];
-
-} GameServerList_Struct;
-
-//#pragma pack(pop)
+    BOOL  Live;                 // 0x00
+    int   ServerCode;           // 0x04
+    char  Name[20];             // 0x08
+    char  IpAddress[16];        // 0x1C
+    WORD  Port;                 // 0x2C
+    BYTE  Percent;              // 0x2E
+    BYTE  Unknown2F;            // 0x2F
+    DWORD LiveTime;             // 0x30
+    WORD  MaxUserCount;         // 0x34
+    WORD  PCbangCount;          // 0x36
+    WORD  UserCount;            // 0x38
+    BYTE  bShow;                // 0x3A
+    char  ServerLocation[17];   // 0x3B
+    WORD  ServerFlag;           // 0x4C
+    BYTE  ExtInfoReceived;      // 0x4E
+    BYTE  IsPK;                 // 0x4F
+    char  ServerVersion[32];    // 0x50
+    char  ClientVersion[32];    // 0x70
+    char  DisplayName[64];      // 0x90
+};
 
 extern GameServerList_Struct	GameServerList[];
 
@@ -124,7 +116,6 @@ extern GameServerList_Struct	GameServerList[];
 // Multicast/CS Info Structures
 // =========================================================================
 #pragma pack(push, 1)
-
 struct CSINFO_NODE
 {
     DWORD MultiCastIP;       // +0x00
@@ -134,20 +125,17 @@ struct CSINFO_NODE
     int MemoryUsage;         // +0x10
     DWORD dwTickCount;       // +0x14
 };
-
 #pragma pack(pop)
 
-//extern std::map<DWORD, CSINFO_NODE> g_mapCSINFO_LIST;
-
-// Main entry point
-int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nShowCmd);
+extern std::map<int, CSINFO_NODE> g_mapCSINFO_LIST;
+extern std::map<int, CSINFO_NODE> g_mapCSINFO_LIST_OLD;
 
 // Dialog Procedures
 BOOL CALLBACK MainDlgProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam);
 INT_PTR CALLBACK ReloadDataDlgProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam);
 INT_PTR CALLBACK ErrorLogDlgProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam);
-INT_PTR CALLBACK McIpSelectDlgProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam);
-INT_PTR CALLBACK PbIpSelectDlgProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam);
+INT_PTR CALLBACK McIpSelectDlgProc(HWND hDlg, UINT uMsg, WPARAM wParam, LPARAM lParam);
+INT_PTR CALLBACK PbIpSelectDlgProc(HWND hDlg, UINT uMsg, WPARAM wParam, LPARAM lParam);
 INT_PTR CALLBACK AboutDlgProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam);
 
 // Initialization & UI
@@ -155,6 +143,7 @@ void IpSelectDlg_InsertListViewCtrl(in_addr addrMulticast, in_addr addrPublic, i
 void IpSelectDlg_InitListViewCtrl();
 void InitDlgControls(HWND hWnd);
 void ShowGameServerListToTreeView();
+void InverseGameServer_ShowHide(HWND hWnd, HTREEITEM& hItem, char* ServerName);
 void CheckNShowPublicIPAddress();
 void CheckLocalNetworkConnectOnly();
 void WriteGameServerInfo();
@@ -167,21 +156,20 @@ void MULTICAST_RECVNOTIFY_PROC(CWzMultiCastSock* lpMultiCast, int IpAddress, int
 void MULTICAST_ERRORNOTIFY_PROC(CWzMultiCastSock* lpMultiCast, int ErrorCode, char* szError);
 void MC_SEND_ConnectServerInfo();
 void MC_SEND_CcsShareInfo();
-BOOL MakeCcsShareInfoBuffer();
-void CFileServerInfoMake_CCS();
+int  MakeCcsShareInfoBuffer();
 void MC_ShowConnectServerList();
 void IpSelectDlg_ClearListView();
 
 void GameServerLoop();
 void GameServerLoopEnd();
-void GameServerInfoUpdate(int servercode, BYTE percent, WORD maxuser, WORD usercount, WORD freeusers, WORD serverflag);
+void GameServerInfoUpdate(int servercode, int percent, WORD maxuser, WORD usercount, WORD freeusers, WORD serverflag);
 
 // Error Log Alarm
 void StartErrorLogAlarm();
 void EndErrorLogAlarm();
 
 // Thread Entry Point
-BOOL CALLBACK MainThreadProc(LPARAM* pParam);
+unsigned int __stdcall MainThreadProc(void* pParam);
 DWORD CALLBACK LoopThread(LPVOID lpParam);
 
 #endif // __CS_H__

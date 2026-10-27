@@ -112,7 +112,4 @@ public:
     HBITMAP m_hBufferBitmap;
 };
 
-// Global log instance (defined in CS.cpp or main module)
-extern CLogProc g_LogProc;
-
 #endif // __LOGPROC_H__

@@ -6,11 +6,11 @@
 
 struct _PER_PIM_CONTEXT
 {
-    SOCKET      Socket;
-    unsigned int IP;
+    SOCKET Socket;
+    in_addr IpAddr;
 };
 
-typedef void(__cdecl* PIM_CALLBACK)(int WorkerID, int Param, _PER_PIM_CONTEXT* Data);
+typedef void(__cdecl* PIM_CALLBACK)(int WorkerID, int Param, void* Data);
 
 struct QueueNode
 {
@@ -63,28 +63,27 @@ public:
 struct PIM_THREAD_PARAM
 {
     class CPIM* pPIM;
-    int         WorkerID;
     int         Param;
+    int         WorkerID;
 };
 
 class CPIM
 {
 public:
+    CRITICAL_SECTION*       m_CSArray;      // +0x00
+    int                     m_QueueCount;   // +0x04
+    int                     m_QueueIndex;   // +0x08
+    Queue*                  m_Queues;       // +0x0C
+    HANDLE*                 m_Events;       // +0x10
+    std::vector<HANDLE>     m_WorkerThreads;
     PIM_CALLBACK            m_Callback;
 
     CPIM(int QueueCount);
     ~CPIM();
 
-    bool StartWorkers(int Param);
+    void StartWorkers();
     int  Push(int QueueIndex, _PER_PIM_CONTEXT* Data);
-    static DWORD WINAPI PI_WorkerThreadProc(LPVOID lpParam);
-
-private:
-    CRITICAL_SECTION* m_CSArray;
-    int                     m_QueueCount;
-    std::vector<HANDLE>     m_WorkerThreads;
-    Queue* m_Queues;
-    HANDLE* m_Events;
+    static unsigned __stdcall PI_WorkerThreadProc(void* lpParam);
 };
 
 #endif // __CPIM_H__

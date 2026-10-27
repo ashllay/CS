@@ -1,273 +1,235 @@
 #include "StdAfx.h"
 #include "IpAddrMng.h"
-#include "LogProc.h"
-#include "LogToFile.h"
 
 CIpAddrMng g_CsIpAddrMng;
 
+// Original initial values (CIpAddrMng constructor at 0x411C50).
 static const int DEFAULT_MAX_PACKET_PER_SEC = 30;
 static const int DEFAULT_MAX_INVALID_PACKETS = 100;
 static const DWORD DEFAULT_TIMEOUT_MS = 600000;
 
 CIpAddrMng::CIpAddrMng()
-    : m_nMaxPacketPerSec(DEFAULT_MAX_PACKET_PER_SEC)
-    , m_nMaxInvalidPackets(DEFAULT_MAX_INVALID_PACKETS)
-    , m_dwTimeoutMs(DEFAULT_TIMEOUT_MS)
+	: m_nMaxPacketPerSec(DEFAULT_MAX_PACKET_PER_SEC)
+	, m_nMaxInvalidPackets(DEFAULT_MAX_INVALID_PACKETS)
+	, m_dwTimeoutMs(DEFAULT_TIMEOUT_MS)
 {
-    InitializeCriticalSection(&m_cs);
+	InitializeCriticalSection(&m_IpAddrMngcs);
 }
 
 CIpAddrMng::~CIpAddrMng()
 {
-    DeleteCriticalSection(&m_cs);
+	DeleteCriticalSection(&m_IpAddrMngcs);
 }
 
-void* CIpAddrMng::GetIpAddrInfo(void* pOutBuffer, DWORD* pIP)
+// GetIpAddrInfo returns a copy of the map value; if the address is not yet
+// tracked, it is added first. The caller must not hold the lock.
+IPADDR_INFO CIpAddrMng::GetIpAddrInfo(unsigned int IP)
 {
-    if (!pOutBuffer || !pIP)
-        return NULL;
+	IPADDR_INFO Temp;
+	memset(&Temp, 0, sizeof(Temp));
 
-    ZeroMemory(pOutBuffer, 0x14);
+	EnterCriticalSection(&m_IpAddrMngcs);
 
-    EnterCriticalSection(&m_cs);
+	std::map<DWORD, IPADDR_INFO>::iterator it = m_mapIPInfo.find(IP);
 
-    std::map<DWORD, IPADDR_INFO>::iterator it = m_mapIPInfo.find(*pIP);
+	if (it == m_mapIPInfo.end())
+	{
+		AddIpAddr(IP);
+		it = m_mapIPInfo.find(IP);
+	}
 
-    if (it != m_mapIPInfo.end())
-    {
-        memcpy(pOutBuffer, &it->second, 0x14);
-    }
-    else
-    {
-        AddIpAddr(pIP);
-        it = m_mapIPInfo.find(*pIP);
-        if (it != m_mapIPInfo.end())
-        {
-            memcpy(pOutBuffer, &it->second, 0x14);
-        }
-    }
+	if (it != m_mapIPInfo.end())
+	{
+		memcpy(&Temp, &it->second, sizeof(IPADDR_INFO));
+	}
 
-    LeaveCriticalSection(&m_cs);
+	LeaveCriticalSection(&m_IpAddrMngcs);
 
-    return pOutBuffer;
+	return Temp;
 }
 
-void CIpAddrMng::AddIpAddr(DWORD* pIP)
+// AddIpAddr is called with m_IpAddrMngcs already held by the caller.
+void CIpAddrMng::AddIpAddr(unsigned int IP)
 {
-    if (!pIP)
-        return;
+	IPADDR_INFO info;
 
-    DWORD dwNow = GetTickCount();
+	DWORD Tick = GetTickCount();
 
-    IPADDR_INFO info;
-    ZeroMemory(&info, sizeof(info));
+	info.dwCreateTick = Tick;
+	info.dwLastActivityTick = Tick;
+	info.dwInvalidPacketCount = 0;
+	info.dwPacketPerSec = 0;
+	info.dwRestricted = 0;
 
-    info.dwIP = *pIP;
-    info.dwUnknown04 = dwNow;
-    info.dwLastActivity = dwNow;
-
-    info.bIP[0] = (*pIP >> 24) & 0xFF;
-    info.bIP[1] = (*pIP >> 16) & 0xFF;
-    info.bIP[2] = (*pIP >> 8) & 0xFF;
-    info.bIP[3] = *pIP & 0xFF;
-
-    info.dwLastPPSReset = dwNow;
-    // other fields remain 0
-
-    m_mapIPInfo[*pIP] = info;
+	m_mapIPInfo[IP] = info;
 }
 
-void CIpAddrMng::DelIpAddr(DWORD dwIP)
+// DelIpAddr is called with m_IpAddrMngcs already held by the caller.
+void CIpAddrMng::DelIpAddr(unsigned int IP)
 {
-    EnterCriticalSection(&m_cs);
-    m_mapIPInfo.erase(dwIP);
-    LeaveCriticalSection(&m_cs);
+	std::map<DWORD, IPADDR_INFO>::iterator it = m_mapIPInfo.find(IP);
+
+	if (it != m_mapIPInfo.end())
+	{
+		m_mapIPInfo.erase(it);
+	}
 }
 
 void CIpAddrMng::CheckIpAddrList()
 {
-    EnterCriticalSection(&m_cs);
+	EnterCriticalSection(&m_IpAddrMngcs);
 
-    DWORD dwNow = GetTickCount();
+	std::map<DWORD, IPADDR_INFO>::iterator it = m_mapIPInfo.begin();
 
-    std::map<DWORD, IPADDR_INFO>::iterator it = m_mapIPInfo.begin();
-    while (it != m_mapIPInfo.end())
-    {
-        IPADDR_INFO& info = it->second;
+	while (it != m_mapIPInfo.end())
+	{
+		DWORD Timeout = m_dwTimeoutMs;
 
-        if (dwNow - info.dwLastActivity >= m_dwTimeoutMs)
-        {
-            if (info.dwRestrictFlags == 1)
-            {
-                g_LogProc.LogAddFuncColor(LOG_COLOR_NORMAL,
-                    "[DDOS] Release Ip Address : Time Out > %d (IP:%d.%d.%d.%d)",
-                    m_dwTimeoutMs,
-                    info.bIP[0], info.bIP[1], info.bIP[2], info.bIP[3]);
+		if (GetTickCount() - it->second.dwLastActivityTick >= Timeout)
+		{
+			if (it->second.dwRestricted == 1)
+			{
+				// The IP octets are taken from the map key (network byte order).
+				BYTE* pIP = (BYTE*)&it->first;
 
-                g_LogFileError.Output(
-                    "[DDOS] Release Ip Address : Time Out > %d (IP:%d.%d.%d.%d)",
-                    m_dwTimeoutMs,
-                    info.bIP[0], info.bIP[1], info.bIP[2], info.bIP[3]);
-            }
+				g_LogProc.LogAddFuncColor(1,
+					"[DDOS] Release Ip Address : Time Out > %d (IP:%d.%d.%d.%d)",
+					Timeout, pIP[0], pIP[1], pIP[2], pIP[3]);
 
-            m_mapIPInfo.erase(it++);
-        }
-        else
-        {
-            ++it;
-        }
-    }
+				g_LogFileError.Output("[DDOS] Release Ip Address : Time Out > %d (IP:%d.%d.%d.%d)",
+					m_dwTimeoutMs, pIP[0], pIP[1], pIP[2], pIP[3]);
+			}
+			it = m_mapIPInfo.erase(it);
+		}
+		else
+		{
+			++it;
+		}
+	}
 
-    LeaveCriticalSection(&m_cs);
+	LeaveCriticalSection(&m_IpAddrMngcs);
 }
 
-int CIpAddrMng::IncIpAddrInvalidPacket(DWORD* pIP)
+int CIpAddrMng::IncIpAddrInvalidPacket(unsigned int IP)
 {
-    if (!pIP)
-        return 0;
+	int Result = 0;
 
-    int bRestricted = 0;
+	EnterCriticalSection(&m_IpAddrMngcs);
 
-    EnterCriticalSection(&m_cs);
+	std::map<DWORD, IPADDR_INFO>::iterator it = m_mapIPInfo.find(IP);
 
-    std::map<DWORD, IPADDR_INFO>::iterator it = m_mapIPInfo.find(*pIP);
+	if (it == m_mapIPInfo.end())
+	{
+		AddIpAddr(IP);
+		it = m_mapIPInfo.find(IP);
+	}
 
-    if (it == m_mapIPInfo.end())
-    {
-        AddIpAddr(pIP);
-        it = m_mapIPInfo.find(*pIP);
-    }
+	if (it != m_mapIPInfo.end())
+	{
+		++it->second.dwInvalidPacketCount;
+		if (it->second.dwInvalidPacketCount >= (DWORD)m_nMaxInvalidPackets)
+		{
+			Result = 1;
+			it->second.dwRestricted = 1;
+		}
+	}
 
-    if (it != m_mapIPInfo.end())
-    {
-        IPADDR_INFO& info = it->second;
-        ++info.dwInvalidPacketCount;
+	LeaveCriticalSection(&m_IpAddrMngcs);
 
-        if (info.dwInvalidPacketCount >= static_cast<DWORD>(m_nMaxInvalidPackets))
-        {
-            bRestricted = 1;
-            info.dwRestrictFlags = 1;
-        }
-    }
-
-    LeaveCriticalSection(&m_cs);
-
-    return bRestricted;
+	return Result;
 }
 
-int CIpAddrMng::IncIpAddrPacketPerSec(DWORD* pIP)
+int CIpAddrMng::IncIpAddrPacketPerSec(unsigned int IP)
 {
-    if (!pIP)
-        return 0;
+	int Result = 0;
 
-    int bRestricted = 0;
-    DWORD dwNow = GetTickCount();
+	EnterCriticalSection(&m_IpAddrMngcs);
 
-    EnterCriticalSection(&m_cs);
+	std::map<DWORD, IPADDR_INFO>::iterator it = m_mapIPInfo.find(IP);
 
-    std::map<DWORD, IPADDR_INFO>::iterator it = m_mapIPInfo.find(*pIP);
+	if (it == m_mapIPInfo.end())
+	{
+		AddIpAddr(IP);
+		it = m_mapIPInfo.find(IP);
+	}
 
-    if (it != m_mapIPInfo.end())
-    {
-        IPADDR_INFO& info = it->second;
+	if (it != m_mapIPInfo.end())
+	{
+		IPADDR_INFO& info = it->second;
+		++info.dwPacketPerSec;
+		if (info.dwPacketPerSec >= (DWORD)m_nMaxPacketPerSec)
+		{
+			Result = 1;
+			info.dwRestricted = 1;
+		}
 
-        if (dwNow - info.dwLastPPSReset > 1000)
-        {
-            info.dwPacketPerSec = 0;
-        }
+		// NOTE: The one-second window is measured from dwLastActivityTick and
+		// the counter is reset only when more than 1000 ms elapsed.
+		DWORD Tick = GetTickCount();
+		if ((Tick - info.dwLastActivityTick) > 1000)
+		{
+			info.dwPacketPerSec = 0;
+		}
+		info.dwLastActivityTick = Tick;
+	}
 
-        ++info.dwPacketPerSec;
+	LeaveCriticalSection(&m_IpAddrMngcs);
 
-        if (info.dwPacketPerSec >= static_cast<DWORD>(m_nMaxPacketPerSec))
-        {
-            bRestricted = 1;
-            info.dwRestrictFlags = 1;
-        }
-
-        info.dwLastActivity = dwNow;
-    }
-    else
-    {
-        AddIpAddr(pIP);
-        it = m_mapIPInfo.find(*pIP);
-
-        if (it != m_mapIPInfo.end())
-        {
-            IPADDR_INFO& info = it->second;
-
-            if (dwNow - info.dwLastPPSReset > 1000)
-            {
-                info.dwPacketPerSec = 0;
-            }
-
-            ++info.dwPacketPerSec;
-
-            if (info.dwPacketPerSec >= static_cast<DWORD>(m_nMaxPacketPerSec))
-            {
-                bRestricted = 1;
-                info.dwRestrictFlags = 1;
-            }
-
-            info.dwLastActivity = dwNow;
-        }
-    }
-
-    LeaveCriticalSection(&m_cs);
-
-    return bRestricted;
+	return Result;
 }
 
 void CIpAddrMng::ReleaseRestriectedIpAddr()
 {
-    EnterCriticalSection(&m_cs);
+	EnterCriticalSection(&m_IpAddrMngcs);
 
-    for (std::map<DWORD, IPADDR_INFO>::iterator it = m_mapIPInfo.begin();
-        it != m_mapIPInfo.end();
-        ++it)
-    {
-        IPADDR_INFO& info = it->second;
+	for (std::map<DWORD, IPADDR_INFO>::iterator it = m_mapIPInfo.begin();
+		it != m_mapIPInfo.end();
+		++it)
+	{
+		if (it->second.dwRestricted == 1)
+		{
+			it->second.dwInvalidPacketCount = 0;
+			it->second.dwPacketPerSec = 0;
+			it->second.dwRestricted = 0;
 
-        if (info.dwRestrictFlags == 1)
-        {
-            info.dwInvalidPacketCount = 0;
-            info.dwPacketPerSec = 0;
-            info.dwRestrictFlags = 0;
+			BYTE* pIP = (BYTE*)&it->first;
 
-            g_LogProc.LogAddFuncColor(LOG_COLOR_NORMAL,
-                "[DDOS] Release Ip Address : All (IP:%d.%d.%d.%d)",
-                info.bIP[0], info.bIP[1], info.bIP[2], info.bIP[3]);
+			g_LogProc.LogAddFuncColor(1,
+				"[DDOS] Release Ip Address : All (IP:%d.%d.%d.%d)",
+				pIP[0], pIP[1], pIP[2], pIP[3]);
 
-            g_LogFileError.Output(
-                "[DDOS] Release Ip Address : All (IP:%d.%d.%d.%d)",
-                info.bIP[0], info.bIP[1], info.bIP[2], info.bIP[3]);
-        }
-    }
+			g_LogFileError.Output("[DDOS] Release Ip Address : All (IP:%d.%d.%d.%d)",
+				pIP[0], pIP[1], pIP[2], pIP[3]);
+		}
+	}
 
-    LeaveCriticalSection(&m_cs);
+	LeaveCriticalSection(&m_IpAddrMngcs);
 }
 
 int CIpAddrMng::GetRestrictedIpIpAddrCount()
 {
-    EnterCriticalSection(&m_cs);
+	EnterCriticalSection(&m_IpAddrMngcs);
 
-    int nCount = 0;
+	int Count = 0;
 
-    for (std::map<DWORD, IPADDR_INFO>::const_iterator it = m_mapIPInfo.begin();
-        it != m_mapIPInfo.end();
-        ++it)
-    {
-        if (it->second.dwRestrictFlags == 1)
-        {
-            ++nCount;
-        }
-    }
+	for (std::map<DWORD, IPADDR_INFO>::iterator it = m_mapIPInfo.begin();
+		it != m_mapIPInfo.end();
+		++it)
+	{
+		if (it->second.dwRestricted == 1)
+		{
+			++Count;
+		}
+	}
 
-    if (nCount > 100)
-    {
-        g_LogFileError.Output("[DDOS] Restricted Ip Count : %d", nCount);
-    }
+	if (Count > 100)
+	{
+		g_LogFileError.Output(
+			"[DDOS] Restricted Ip Count : %d",
+			Count);
+	}
 
-    LeaveCriticalSection(&m_cs);
+	LeaveCriticalSection(&m_IpAddrMngcs);
 
-    return nCount;
+	return Count;
 }

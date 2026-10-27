@@ -1,10 +1,9 @@
 ﻿#include "StdAfx.h"
 #include "Protocol.h"
+#include "WzTcpSock.h"
 #include "giocp.h"
 #include "WzUdp.h"
-#include <CommCtrl.h>
 #include "DefaultWindow.h"
-#include "WzTcpSock.h"
 #include "IpAddrMng.h"
 #include "PerfMonEx.h"
 #include "TrayIconControl.h"
@@ -20,16 +19,15 @@
 HWND hErrorLogDlg;
 HINSTANCE g_hInst;
 int g_iPERF_IDX_MEM;
+int g_iPERF_IDX_CPU;
 BYTE ClientV3, ClientV1, ClientV2;
 char FtpServerIpAddress_LocalTest[104];
 WzUdp cUdpSoc;
+CWzTcpSock g_GameServerInfoSock;
 HANDLE LoopThreadHandle;
 char FtpServerIpAddress[102];
 WORD HTTPServerPort;
-//CRITICAL_SECTION g_critERROR_LOG = { NULL, 0, 0, NULL, NULL, 0 };//not the right place for this
 CRITICAL_SECTION gameservercriti;
-int g_iPERF_IDX_CPU;
-CWzTcpSock g_GameServerInfoSock;
 CRITICAL_SECTION g_critCSINFO_LIST;
 char HTTPServerFileName[24];
 char FtpServerFileName[24];
@@ -50,14 +48,13 @@ BOOL g_lpMultiCastErrorNotifyProc = TRUE;
 HWND hToolBar;
 int g_iDownLoadType;
 CTreeViewControl CTreeCtl;
-HWND hWnd;
+//int dword_4B92F8;
 char FtpServerPass[24];
 HWND hMainDlg;
 WORD FtpServerPort_LocalTest;
 BOOL g_bDoTerminateLoopThread = FALSE;
 CWhatsUpDummyServer g_WhatUpDummyServer;
 HWND hAboutDlg;
-
 int g_nICON_IMAGEID;
 DWORD g_dwMaxPacketPerSec = 30;   // Max packets/sec
 DWORD g_dwMaxInvalidPackets = 100;  // Max invalid packets
@@ -79,14 +76,16 @@ int g_bMultiCastOn;
 CHAR g_szMC_IPADDR[32];
 CHAR g_szPB_IPADDR[32];
 int g_iLV_ItemNo = 0;
-BOOL g_bMULTICAST_LIST_REMAKE = FALSE;
-BOOL g_bGameServerLive = TRUE;          // Game server heartbeat active
+int  g_bMULTICAST_LIST_REMAKE = 0;
+bool g_bGameServerLive = false;         // Game server heartbeat active (zero initialized in the original)
 HWND hMcIpSelectDlg;
 HWND hPbIpSelectDlg;
 
 PMSG_CCS_INFOSHARE g_cCCS_INFOSHARE_BUF;
 
-//CIpAddrMng g_CsIpAddrMng;//not the right place for this
+// Multicast peer lists: current status and snapshot used to detect changes
+std::map<int, CSINFO_NODE> g_mapCSINFO_LIST;
+std::map<int, CSINFO_NODE> g_mapCSINFO_LIST_OLD;
 
 // Buffer for string formatting
 static char String[256];
@@ -143,11 +142,12 @@ INT_PTR CALLBACK MainDlgProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
 
 		CTreeCtl.Start(DlgItem, hWnd);
 
-		CTreeCtl.AddImagetoImageList(LoadIcon(g_hInst, MAKEINTRESOURCE(IDB_BITMAP_TOOLBAR)));//107?
-		CTreeCtl.AddImagetoImageList(LoadIcon(g_hInst, MAKEINTRESOURCE(IDI_ICON_STATE_ONLINE)));//132?
+		CTreeCtl.AddImagetoImageList(LoadIcon(g_hInst, MAKEINTRESOURCE(IDI_ICON_STATE_WAITING)));//107?
+		CTreeCtl.AddImagetoImageList(LoadIcon(g_hInst, MAKEINTRESOURCE(IDI_ICON_STATE_OFFLINE)));//132?
 		CTreeCtl.AddImagetoImageList(LoadIcon(g_hInst, MAKEINTRESOURCE(IDI_ICON_STATE_ERROR)));//105?
 
-		g_OldTreeViewProc = (WNDPROC)SetWindowLong(hWnd, GWL_WNDPROC, (LONG)CTreeViewControl::TreeViewSubProc);
+		// The original subclasses CTreeCtl.m_hTreeView (0x4B92AC), not the dialog.
+		CTreeViewControl::g_OldTreeViewProc = (WNDPROC)SetWindowLong(CTreeCtl.m_hTreeView, GWL_WNDPROC, (LONG)CTreeViewControl::TreeViewSubProc);
 
 		CTrayCtl.Start(g_hInst, hWnd, IDI_ICON_STATE_ONLINE, "ConnectServer OK");
 
@@ -284,7 +284,7 @@ INT_PTR CALLBACK MainDlgProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
 		}
 
 		case 8001:
-		case 0x9C4A:
+		case ID_MENU_REFRESH_GAMESERVER:
 		case ID_TOOL_REFRESH:     // 40030
 		{
 			ShowGameServerListToTreeView();
@@ -292,7 +292,7 @@ INT_PTR CALLBACK MainDlgProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
 		}
 
 		case 8002:
-		case 0x9C50:
+		case ID_MENU_RELOAD_DATAFILES:
 		case ID_TOOL_RELOAD:      // 40031
 		{
 			if (!IsWindow(hReloadDataDlg))
@@ -303,7 +303,7 @@ INT_PTR CALLBACK MainDlgProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
 		}
 
 		case 8003:
-		case 0x9C57:
+		case ID_MENU_LOCAL_CONNECT_ONLY:
 		case ID_TOOL_LOCAL_ONLY:  // 40033
 		{
 			if (g_bLocalNetworkConnectOnly)
@@ -337,8 +337,8 @@ INT_PTR CALLBACK MainDlgProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
 		}
 
 		case 8004:
-		case 0x9C4C:
-		case 0x9C51:
+		case ID_MENU_TERMINATE_CS_TRAY:
+		case ID_MENU_TERMINATE_CS:
 		case ID_TOOL_TERMINATE:   // 40032
 		{
 			if (MessageBox(hWnd, "Are You Sure to Terminate Connect Server ?", "Ask Terminate Server", MB_YESNO | MB_ICONQUESTION) != IDYES)
@@ -350,12 +350,13 @@ INT_PTR CALLBACK MainDlgProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
 		}
 
 		case 8005:
-		case 0x9C56:
+		case ID_MENU_SHOW_ERRORLOG:
 		case ID_TOOL_ERROR_LOG:   // 40034
 		{
 			if (IsWindow(hErrorLogDlg))
 			{
 				ShowWindow(hErrorLogDlg, SW_SHOW);
+
 			}
 			else
 			{
@@ -379,7 +380,7 @@ INT_PTR CALLBACK MainDlgProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
 
 		case ID_MENU_SHOW_CS_UI:
 		{
-			ShowWindow(hWnd, SW_SHOW);
+			ShowWindow(hWnd, SW_NORMAL);
 			SetForegroundWindow(hWnd);
 			SetFocus(hWnd);
 			return TRUE;
@@ -413,32 +414,32 @@ INT_PTR CALLBACK MainDlgProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
 
 		switch ((UINT)wParam)
 		{
-			//case 0x1F41:
+		case 8001:
 		case ID_TOOL_REFRESH:
 			lpText->lpszText = "Refresh Game Server List";
 			break;
 
-			//case 0x1F42:
+		case 8002:
 		case ID_TOOL_RELOAD:
 			lpText->lpszText = "Reload Connect Server Data Files";
 			break;
 
-			//case 0x1F43:
+		case 8003:
 		case ID_TOOL_TERMINATE:
 			lpText->lpszText = "Terminate Connect Server";
 			break;
 
-			//case 0x1F44:
+		case 8004:
 		case ID_TOOL_LOCAL_ONLY:
 			lpText->lpszText = g_bLocalNetworkConnectOnly ? "Local Network Connect Only ON" : "Local Network Connect Only OFF";
 			break;
 
-			//case 0x1F45:
+		case 8005:
 		case ID_TOOL_ERROR_LOG:
 			lpText->lpszText = "Show Fatal Error Log List";
 			break;
 
-		case 0x1F46:
+		case 8006:
 		case ID_TOOL_MULTICAST:
 			lpText->lpszText = g_bMultiCastOn ? "Multicasting CS Info ON" : "Multicasting CS Info OFF";
 			break;
@@ -615,7 +616,7 @@ void StartErrorLogAlarm()
 void EndErrorLogAlarm()
 {
 	KillTimer(hMainDlg, 1);
-	SendMessageA(hToolBar, TB_CHECKBUTTON, ID_TOOL_ERROR_LOG, MAKELPARAM(0, 0));
+	SendMessage(hToolBar, TB_CHANGEBITMAP, ID_TOOL_ERROR_LOG, 4);
 	CTrayCtl.SetTrayIcon(IDI_ICON_STATE_ONLINE, "Connect Server OK.");
 }
 
@@ -850,7 +851,6 @@ INT_PTR CALLBACK McIpSelectDlgProc(HWND hDlg, UINT uMsg, WPARAM wParam, LPARAM l
 			EnableWindow(GetDlgItem(hDlg, IDC_BTN_START_MULTICAST), TRUE);
 			EnableWindow(GetDlgItem(hDlg, IDC_BTN_END_MULTICAST), FALSE);
 		}
-
 		return TRUE;
 	}
 
@@ -898,7 +898,7 @@ INT_PTR CALLBACK McIpSelectDlgProc(HWND hDlg, UINT uMsg, WPARAM wParam, LPARAM l
 			g_bMULTICAST_LIST_REMAKE = TRUE;
 
 			// Update toolbar button - USE TB_CHANGEBITMAP with bitmap index 9
-			SendMessageA(hToolBar, TB_CHANGEBITMAP, ID_TOOL_MULTICAST, 9);
+			SendMessageA(hToolBar, TB_CHANGEBITMAP, 8006, 9);
 
 			DestroyWindow(hDlg);
 		}
@@ -916,7 +916,7 @@ INT_PTR CALLBACK McIpSelectDlgProc(HWND hDlg, UINT uMsg, WPARAM wParam, LPARAM l
 			g_CsInfoMultiCast.EndMultiCast();
 
 			// Update toolbar button - USE TB_CHANGEBITMAP with bitmap index 5
-			SendMessageA(hToolBar, TB_CHANGEBITMAP, ID_TOOL_MULTICAST, 5);
+			SendMessageA(hToolBar, TB_CHANGEBITMAP, 8006, 5);
 
 			DestroyWindow(hDlg);
 		}
@@ -932,7 +932,6 @@ INT_PTR CALLBACK McIpSelectDlgProc(HWND hDlg, UINT uMsg, WPARAM wParam, LPARAM l
 		return TRUE;
 	}
 	}
-
 	return FALSE;
 }
 
@@ -1050,9 +1049,9 @@ void IpSelectDlg_InitListViewCtrl()
 	if (!hList) return;
 
 	// Set extended styles: full-row select only (NOT grid lines!)
-	LRESULT dwExStyle = SendMessageA(hList, LVM_GETEXTENDEDLISTVIEWSTYLE, 0, 0);
+	LRESULT dwExStyle = SendMessage(hList, LVM_GETEXTENDEDLISTVIEWSTYLE, 0, 0);
 	dwExStyle |= LVS_EX_FULLROWSELECT;
-	SendMessageA(hList, LVM_SETEXTENDEDLISTVIEWSTYLE, 0, dwExStyle);
+	SendMessage(hList, LVM_SETEXTENDEDLISTVIEWSTYLE, 0, dwExStyle);
 
 	// Add columns (LVM_INSERTCOLUMN = 0x101B)
 	LV_COLUMNA lvc = { 0 };
@@ -1063,31 +1062,31 @@ void IpSelectDlg_InitListViewCtrl()
 	lvc.pszText = "CS Multicast IP";
 	lvc.cx = 120;
 	lvc.iSubItem = 0;
-	SendMessageA(hList, LVM_INSERTCOLUMNA, 0, (LPARAM)&lvc);
+	SendMessage(hList, LVM_INSERTCOLUMNA, 0, (LPARAM)&lvc);
 
 	// Column 1: CS Public IP (120px)
 	lvc.pszText = "CS Public IP";
 	lvc.cx = 120;
 	lvc.iSubItem = 1;
-	SendMessageA(hList, LVM_INSERTCOLUMNA, 1, (LPARAM)&lvc);
+	SendMessage(hList, LVM_INSERTCOLUMNA, 1, (LPARAM)&lvc);
 
 	// Column 2: Current Connect (150px)
 	lvc.pszText = "Current Connect";
 	lvc.cx = 150;
 	lvc.iSubItem = 2;
-	SendMessageA(hList, LVM_INSERTCOLUMNA, 2, (LPARAM)&lvc);
+	SendMessage(hList, LVM_INSERTCOLUMNA, 2, (LPARAM)&lvc);
 
 	// Column 3: CPU Usage (120px)
 	lvc.pszText = "CPU Usage";
 	lvc.cx = 120;
 	lvc.iSubItem = 3;
-	SendMessageA(hList, LVM_INSERTCOLUMNA, 3, (LPARAM)&lvc);
+	SendMessage(hList, LVM_INSERTCOLUMNA, 3, (LPARAM)&lvc);
 
 	// Column 4: Mem Usage (120px)
 	lvc.pszText = "Mem Usage";
 	lvc.cx = 120;
 	lvc.iSubItem = 4;
-	SendMessageA(hList, LVM_INSERTCOLUMNA, 4, (LPARAM)&lvc);
+	SendMessage(hList, LVM_INSERTCOLUMNA, 4, (LPARAM)&lvc);
 
 	// Additional messages from original (purpose unclear, but present)
 	// These might be setting default item or preparing for item insertion
@@ -1095,18 +1094,18 @@ void IpSelectDlg_InitListViewCtrl()
 	lvi.mask = LVIF_TEXT;
 	lvi.pszText = "";
 	lvi.iItem = 4;  // wParam from last column
-	SendMessageA(hList, LVM_SETITEMA, (WPARAM)4, (LPARAM)&lvi);
-	SendMessageA(hList, LVM_SETITEMTEXTA, (WPARAM)4, (LPARAM)&lvi);
+	SendMessage(hList, LVM_SETITEMA, (WPARAM)4, (LPARAM)&lvi);
+	SendMessage(hList, LVM_SETITEMTEXTA, (WPARAM)4, (LPARAM)&lvi);
 
 	// Get and set column order array
 	int nOrderArray[32] = { 0 };  // Buffer for column order
-	SendMessageA(hList, LVM_GETCOLUMNORDERARRAY, 0, (LPARAM)nOrderArray);
+	SendMessage(hList, LVM_GETCOLUMNORDERARRAY, 0, (LPARAM)nOrderArray);
 
 	// Modify the order (original ORs with 0x20 on the LOBYTE of return value)
 	// This is likely setting a flag or modifying the column order
-	LRESULT lResult = SendMessageA(hList, LVM_GETCOLUMNORDERARRAY, 0, 0);
+	LRESULT lResult = SendMessage(hList, LVM_GETCOLUMNORDERARRAY, 0, 0);
 	lResult |= 0x20;
-	SendMessageA(hList, LVM_SETCOLUMNORDERARRAY, 0, lResult);
+	SendMessage(hList, LVM_SETCOLUMNORDERARRAY, 0, lResult);
 }
 
 // =========================================================================
@@ -1180,41 +1179,38 @@ void IpSelectDlg_ClearListView()
 // =========================================================================
 // MakeCcsShareInfoBuffer - Build CCS Share Info Buffer
 // =========================================================================
-BOOL MakeCcsShareInfoBuffer()
+int MakeCcsShareInfoBuffer()
 {
 	EnterCriticalSection(&gameservercriti);
 
 	int shareCount = 0;
 
 	PMSG_CCS_INFOLIST* lpEntry = &g_cCCS_INFOSHARE_BUF.Entry[0];
-
 	GameServerList_Struct* lpServer = GameServerList;
 
 	while ((int)lpServer < (int)ClientVersion)
 	{
-		if (lpServer->Live == TRUE)
+		if (lpServer->Live == 1)
 		{
-			lpEntry->ServerCode = lpServer->ServerCode;
-			lpEntry->ServerType = lpServer->ServerType;
-			lpEntry->MaxUserCount = lpServer->MaxUserCount;
-			lpEntry->PCbangCount = lpServer->MaxUserCount - lpServer->UserCount;
-			lpEntry->UserCount = lpServer->UserCount;
-			lpEntry->ServerFlag = lpServer->ServerFlag;
-
+			lpEntry->ServerCode    = lpServer->ServerCode;
+			lpEntry->ServerType    = lpServer->Percent;
+			lpEntry->MaxUserCount  = lpServer->MaxUserCount;
+			lpEntry->FreeUserSlots = lpServer->MaxUserCount - lpServer->UserCount;
+			lpEntry->UserCount     = lpServer->UserCount;
+			lpEntry->ServerFlag    = lpServer->ServerFlag;
 			++shareCount;
 			++lpEntry;
 		}
-
 		++lpServer;
 	}
 
 	g_cCCS_INFOSHARE_BUF.JoinServerCount = g_JoinServerRecvQCount;
 	g_cCCS_INFOSHARE_BUF.ShareCount = shareCount;
 
-	g_cCCS_INFOSHARE_BUF.c		= PMHC_WORD;
-	g_cCCS_INFOSHARE_BUF.sizeH	= SET_NUMBERH(shareCount);
-	g_cCCS_INFOSHARE_BUF.sizeL	= SET_NUMBERL(shareCount);
-	g_cCCS_INFOSHARE_BUF.head	= 0x03;
+	g_cCCS_INFOSHARE_BUF.h.c		= PMHC_WORD;
+	g_cCCS_INFOSHARE_BUF.h.sizeH	= SET_NUMBERH((shareCount + 1) * sizeof(PMSG_CCS_INFOLIST));
+	g_cCCS_INFOSHARE_BUF.h.sizeL	= SET_NUMBERL((shareCount + 1) * sizeof(PMSG_CCS_INFOLIST));
+	g_cCCS_INFOSHARE_BUF.h.headcode = 0x03;
 
 	LeaveCriticalSection(&gameservercriti);
 
@@ -1227,18 +1223,18 @@ BOOL MakeCcsShareInfoBuffer()
 void InitDlgControls(HWND hWnd)
 {
 	// Load toolbar bitmap (0x7A = 122)
-	LoadBitmapA(g_hInst, MAKEINTRESOURCEA(0x7A));
+	LoadBitmapA(g_hInst, MAKEINTRESOURCEA(IDB_BITMAP_TOOLBAR));
 
 	// Create toolbar
 	TBBUTTON Buttons = { 0 };
 	hToolBar = CreateToolbarEx(hWnd,
 		WS_CHILD | WS_VISIBLE | TBSTYLE_FLAT | TBSTYLE_TOOLTIPS | CCS_TOP | CCS_NODIVIDER,
-		0x1F40,              // Toolbar ID = 8000
-		11,                  // Max buttons
+		8000,				// Toolbar ID = 8000
+		11,					// Max buttons
 		g_hInst,
-		IDB_BITMAP_TOOLBAR,                // Bitmap resource ID
-		&Buttons,            // Button array
-		0,                   // Initial button count = 0
+		IDB_BITMAP_TOOLBAR,	// Bitmap resource ID
+		&Buttons,			// Button array
+		0,					// Initial button count = 0
 		32, 32, 32, 32,     // Button sizes
 		sizeof(TBBUTTON));
 
@@ -1251,7 +1247,7 @@ void InitDlgControls(HWND hWnd)
 			// Set common button properties
 			Buttons.fsState = TBSTATE_ENABLED;
 			Buttons.iString = 0;
-
+			// Button layout: [Refresh][Sep][Reload][Sep][Terminate][Sep][LocalOnly][Sep][ErrorLog][Sep][Multicast]
 			if (nBtnIdx == 1 || nBtnIdx == 3 || nBtnIdx == 5 || nBtnIdx == 7 || nBtnIdx == 9)
 			{
 				// Separator
@@ -1263,7 +1259,7 @@ void InitDlgControls(HWND hWnd)
 				// Regular button
 				Buttons.iBitmap = nBitmapIdx;
 				Buttons.fsStyle = TBSTYLE_BUTTON;
-				Buttons.idCommand = nBitmapIdx + ID_TOOL_REFRESH;  // Start from 8001
+				Buttons.idCommand = 8001 + (nBitmapIdx * 1);  // Start from 8001
 				++nBitmapIdx;
 			}
 
@@ -1275,8 +1271,8 @@ void InitDlgControls(HWND hWnd)
 	SendMessageA(hToolBar, TB_AUTOSIZE, 0, 0);
 
 	// Set multicast button state to unchecked (lParam = 0, not MAKELPARAM)
-	HWND hDlgItem = GetDlgItem(hMainDlg, 8000);
-	SendMessageA(hDlgItem, TB_CHECKBUTTON, IDC_CHECK_PUBLIC_IP, 0);  // Just 0, not MAKELPARAM
+	//HWND hDlgItem = GetDlgItem(hMainDlg, 8000);
+	//SendMessageA(hDlgItem, 1025, 8006, 0);  // Just 0, not MAKELPARAM
 
 	// Disable Public IP edit field (IDC_CHECK_PUBLIC_IP = 1014)
 	HWND hEdit = GetDlgItem(hMainDlg, IDC_CHECK_PUBLIC_IP);
@@ -1332,7 +1328,7 @@ void InitDlgControls(HWND hWnd)
 // =========================================================================
 // MainThreadProc - Main Worker Thread Entry Point
 // =========================================================================
-BOOL CALLBACK MainThreadProc(LPARAM* pParam)
+unsigned int __stdcall MainThreadProc(void* pParam)
 {
 	// Initial delay to let UI finish initializing
 	Sleep(1000);
@@ -1401,7 +1397,7 @@ int ReadServerInfo()
 	GetPrivateProfileString("FtpServerInfo_LocalTest", "Pass", "", FtpServerPass_LocalTest, sizeof(FtpServerPass_LocalTest), FileName);
 
 	// HTTP Server Settings
-	GetPrivateProfileStringA("HttpServerInfo", "HttpAddress", "", HTTPServerIpAddress, sizeof(HTTPServerIpAddress), FileName);
+	GetPrivateProfileString("HttpServerInfo", "HttpAddress", "", HTTPServerIpAddress, sizeof(HTTPServerIpAddress), FileName);
 	HTTPServerPort = GetPrivateProfileInt("HttpServerInfo", "Port", 80, FileName);
 	GetPrivateProfileString("HttpServerInfo", "Id", "", HTTPServerID, sizeof(HTTPServerID), FileName);
 	GetPrivateProfileString("HttpServerInfo", "Pass", "", HTTPServerPass, sizeof(HTTPServerPass), FileName);
@@ -1529,11 +1525,7 @@ void ReadServerList()
 		GameServerList[n].ServerCode = -1;
 		GameServerList[n].Live = 0;
 		GameServerList[n].LiveTime = GetTickCount();
-		GameServerList[n].UserCount = n;  // TEST field
-		GameServerList[n].Percent = 0;
-		GameServerList[n].bShow = FALSE;
-		ZeroMemory(GameServerList[n].Name, sizeof(GameServerList[n].Name));
-		ZeroMemory(GameServerList[n].IpAddress, sizeof(GameServerList[n].IpAddress));
+		GameServerList[n].MaxUserCount = n;  // TEST field (original does not touch UserCount)
 	}
 
 	// Parse using CWzMemScript
@@ -1543,62 +1535,37 @@ void ReadServerList()
 	SMDToken token;
 	while ((token = script.GetToken()) != END)
 	{
-		// First token: server number (as number)
-		if (token != NUMBER)
-			continue;  // Skip invalid entries
-
-		int snum = script.GetNumber() & 0xFF;  // Cast to byte as original
-
-		// Validate server number
-		if (snum < 0 || snum >= MAX_GAMESERVERLIST)
-			continue;
-
-		// Set server code
-		GameServerList[snum].ServerCode = static_cast<BYTE>(script.GetNumber());
+		// First token: slot number, also used as the server code (masked to 16 bits,
+		// no range check in the original)
+		int snum = script.GetNumber() & 0xFFFF;
+		GameServerList[snum].ServerCode = snum;
 
 		// Next token: server name (string)
-		token = script.GetToken();
-		if (token == NAME)
-		{
-			strncpy_s(GameServerList[snum].Name, sizeof(GameServerList[snum].Name), script.GetString(), _TRUNCATE);
-		}
+		script.GetToken();
+		strcpy(GameServerList[snum].Name, script.GetString());
 
 		// Next token: IP address (string)
-		token = script.GetToken();
-		if (token == NAME)
-		{
-			strncpy_s(GameServerList[snum].IpAddress, sizeof(GameServerList[snum].IpAddress), script.GetString(), _TRUNCATE);
-		}
+		script.GetToken();
+		strcpy(GameServerList[snum].IpAddress, script.GetString());
 
 		// Next token: port number
-		token = script.GetToken();
-		if (token == NUMBER)
-		{
-			GameServerList[snum].Port = script.GetNumber();
-		}
+		script.GetToken();
+		GameServerList[snum].Port = script.GetNumber();
 
 		// Initialize load percentage
 		GameServerList[snum].Percent = 0;
 
-		// Next token: SHOW/HIDE flag
-		token = script.GetToken();
-		if (token == NAME)
+		// Next token: SHOW/HIDE flag, also copied to ServerLocation
+		script.GetToken();
+		if (strcmp(script.GetString(), "SHOW") == 0)
 		{
-			// Case-sensitive comparison (matches original)
-			if (strcmp(script.GetString(), "SHOW") == 0)
-			{
-				GameServerList[snum].bShow = TRUE;
-			}
-			else
-			{
-				GameServerList[snum].bShow = FALSE;
-			}
+			GameServerList[snum].bShow = TRUE;
 		}
 		else
 		{
-			// Default to hidden
 			GameServerList[snum].bShow = FALSE;
 		}
+		strcpy(GameServerList[snum].ServerLocation, script.GetString());
 
 		// TEST build: force live status
 #ifdef TEST_MD
@@ -1624,7 +1591,7 @@ void ReadServerList()
 // GameServerInfoUpdate - Update Server Info from Heartbeat
 // =========================================================================
 //GameServerInfoUpdate(lpMsg->ServerCode, lpMsg->Percent, lpMsg->UserCount, 0, 0, lpMsg->MaxUserCount);
-void GameServerInfoUpdate(int servercode, BYTE percent, WORD maxuser, WORD usercount, WORD freeusers, WORD serverflag)
+void GameServerInfoUpdate(int servercode, int percent, WORD maxuser, WORD usercount, WORD pcbangcount, WORD serverflag)
 {
 	EnterCriticalSection(&gameservercriti);
 
@@ -1634,11 +1601,9 @@ void GameServerInfoUpdate(int servercode, BYTE percent, WORD maxuser, WORD userc
 		{
 			GameServerList[n].Percent = percent;
 			GameServerList[n].LiveTime = GetTickCount();
-
 			GameServerList[n].MaxUserCount = maxuser;
-			GameServerList[n].PCbangCount = maxuser - freeusers;
-			GameServerList[n].UserCount = freeusers;
-
+			GameServerList[n].PCbangCount = maxuser - pcbangcount;
+			GameServerList[n].UserCount = pcbangcount;
 			GameServerList[n].ServerFlag = serverflag;
 
 			if (GameServerList[n].Live == 0)
@@ -1673,7 +1638,7 @@ void GameServerInfoTimeCheck()
 	for (int n = 0; n < MAX_GAMESERVERLIST; n++)
 	{
 		// Local server is always alive
-		if (!strcmp(GameServerList[n].ServerVersion, "LOCAL"))
+		if (strcmp(GameServerList[n].ServerLocation, "LOCAL") == 0)
 		{
 			GameServerList[n].Live = 1;
 		}
@@ -1683,11 +1648,13 @@ void GameServerInfoTimeCheck()
 			{
 				GameServerList[n].Live = 0;
 				g_LogProc.LogAddFunc("%s TIME OUT Server Delete %d.", GameServerList[n].Name, GetTickCount() - GameServerList[n].LiveTime);
-				GameServerList[n].ServerFlag = 0;
-				GameServerList[n].ServerType = 0;
+				// Original 0x406050 clears the extended-info flag (+0x4E) and
+				// IsPK (+0x4F); it does not touch ServerFlag (+0x4C).
+				GameServerList[n].ExtInfoReceived = 0;
+				GameServerList[n].IsPK = 0;
 				memset(GameServerList[n].ServerVersion, 0, sizeof(GameServerList[n].ServerVersion));
-				memset(GameServerList[n].ClientVersion, 0, sizeof(GameServerList[n].ClientVersion));
 				g_bGameServerLive = FALSE;
+				memset(GameServerList[n].ClientVersion, 0, sizeof(GameServerList[n].ClientVersion));
 			}
 		}
 	}
@@ -1763,17 +1730,23 @@ void GameServerLoopEnd()
 // =========================================================================
 void ShowGameServerListToTreeView()
 {
-	// Clear TreeView
-	SendMessage(hWnd, TVM_DELETEITEM, 0, (LPARAM)TVI_ROOT);
+	// Clear TreeView. The original sends TVM_DELETEITEM (0x1101) to
+	// CTreeCtl.m_hTreeView (CTreeCtl + 0x04, original 0x4B92AC).
+	// If this targets a NULL/other window the old nodes survive and every
+	// refresh appends another copy of the whole server list.
+	SendMessageA(CTreeCtl.m_hTreeView, TVM_DELETEITEM, 0, (LPARAM)TVI_ROOT);
 
-	int ServerGroupCount[128];
+	int Group;
+	int GroupCount;
+	char szGroupName[256];
+	char szText[256];
 	int ServerGroupCreated[128];
+	int ServerGroupCount[128];
 
-	memset(ServerGroupCount, 0, sizeof(ServerGroupCount));
 	memset(ServerGroupCreated, 0, sizeof(ServerGroupCreated));
+	memset(ServerGroupCount, 0, sizeof(ServerGroupCount));
 
-	//dword_4B92F8 = 0;
-
+	CTreeCtl.m_nItemCount = 0;  // original dword_4B92F8 (CTreeCtl + 0x50)
 	EnterCriticalSection(&gameservercriti);
 
 	//
@@ -1795,74 +1768,62 @@ void ShowGameServerListToTreeView()
 	for (int n = 0; n < MAX_GAMESERVERLIST; n++)
 	{
 		GameServerList_Struct* lpServer = &GameServerList[n];
-
 		if (lpServer->ServerCode <= -1 || !lpServer->Live)
 		{
 			continue;
 		}
 
-		int Group = n / 20;
+		Group = n / 20;
 
 		//
 		// Create root group node once
 		//
 		if (!ServerGroupCreated[Group])
 		{
+			GroupCount = ServerGroupCount[Group];
 			ServerGroupCreated[Group] = 1;
-			char szGroupName[256];
-			wsprintf(szGroupName, "Game Server - %d (%d)", Group + 1, ServerGroupCount[Group]);
+			wsprintf(szGroupName, "Game Server - %d (%d)", Group + 1, GroupCount);
 			CTreeCtl.InsertServerNode(0, 0, szGroupName);
 		}
-
 		//
-		// Extended info mode
+		// bShow determines visibility, ExtInfoReceived selects the display
+		// format, and IsPK selects the "[PK]"/"[NON PK]" text.
 		//
-		if (lpServer->ServerType == 1)
+		if (lpServer->bShow)
 		{
-			char szText[256];
-			const char* szPKType;
-
-			if (lpServer->ServerFlag)
+			// VISIBLE servers
+			if (lpServer->ExtInfoReceived == 1)
 			{
-				szPKType = "PK";
-			}
-			else
-			{
-				szPKType = "NON-PK";
-			}
-
-			//
-			// Visible server
-			//
-			if (lpServer->bShow)
-			{
-				wsprintf(szText, "%s : [%s] SV:%s, CV:%s", lpServer->Name, szPKType, lpServer->ServerVersion, lpServer->ClientVersion);
+				// Extended info
+				const char* szPKType = lpServer->IsPK ? "PK" : "NON PK";
+				wsprintf(szText, "%s : [%s] SV:%s, CV:%s",
+					lpServer->Name, szPKType, lpServer->ServerVersion, lpServer->ClientVersion);
 				strcpy(lpServer->DisplayName, szText);
 				CTreeCtl.InsertSubServerNode(1, 1, szText);
 			}
-			//
-			// Hidden server
-			//
 			else
 			{
-				wsprintf(szText, "%s : [%s] GV:%s, CL:%s", lpServer->Name, szPKType, lpServer->ServerVersion, lpServer->ClientVersion);
+				// Legacy mode
+				strcpy(lpServer->DisplayName, lpServer->Name);
+				CTreeCtl.InsertSubServerNode(1, 1, lpServer->Name);
+			}
+		}
+		else
+		{
+			// HIDDEN servers
+			if (lpServer->ExtInfoReceived == 1)
+			{
+				// Extended info
+				const char* szPKType = lpServer->IsPK ? "PK" : "NON PK";
+				wsprintf(szText, "%s : [%s] GV:%s, CL:%s",
+					lpServer->Name, szPKType, lpServer->ServerVersion, lpServer->ClientVersion);
 				strcpy(lpServer->DisplayName, szText);
 				CTreeCtl.InsertSubServerNode(2, 2, szText);
 			}
-		}
-		//
-		// Legacy/simple mode
-		//
-		else
-		{
-			strcpy(lpServer->DisplayName, lpServer->Name);
-
-			if (lpServer->bShow)
-			{
-				CTreeCtl.InsertSubServerNode(1, 1, lpServer->Name);
-			}
 			else
 			{
+				// Legacy mode
+				strcpy(lpServer->DisplayName, lpServer->Name);
 				CTreeCtl.InsertSubServerNode(2, 2, lpServer->Name);
 			}
 		}
@@ -1874,29 +1835,32 @@ void ShowGameServerListToTreeView()
 // =========================================================================
 // InverseGameServer_ShowHide - Toggle Server Visibility in UI
 // =========================================================================
-void InverseGameServer_ShowHide(HWND hWnd, HTREEITEM* hItem, char* ServerName)
+void InverseGameServer_ShowHide(HWND hWnd, HTREEITEM& hItem, char* ServerName)
 {
 	EnterCriticalSection(&gameservercriti);
 
 	for (int n = 0; n < MAX_GAMESERVERLIST; n++)
 	{
-		if (GameServerList[n].ServerCode > -1 && GameServerList[n].Live && strcmp(GameServerList[n].Name, ServerName) == 0)
+		if (GameServerList[n].ServerCode > -1 && GameServerList[n].Live && strcmp(GameServerList[n].DisplayName, ServerName) == 0)
 		{
 			char Text[128];
+			// Original 0x40684B: CurrentState = bShow ? "SHOW" : "HIDE",
+			// NextState = bShow ? "HIDE" : "SHOW".
 			const char* CurrentState = GameServerList[n].bShow ? "SHOW" : "HIDE";
 			const char* NextState = GameServerList[n].bShow ? "HIDE" : "SHOW";
 
 			wsprintf(Text, "%s  Current State : %s\n\nWill you change this State to %s ?",
 				GameServerList[n].Name, CurrentState, NextState);
 
-			if (MessageBox(0, Text, "Ask GameServer State Change", MB_YESNO | MB_ICONQUESTION | MB_SYSTEMMODAL) == IDYES)
+			// Original uses 0x124 = MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON2.
+			if (MessageBox(0, Text, "Ask GameServer State Change", MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON2) == IDYES)
 			{
 				GameServerList[n].bShow = !GameServerList[n].bShow;
 
 				TVITEM tvi;
 
-				tvi.mask = TVIF_IMAGE | TVIF_SELECTEDIMAGE;
-				tvi.hItem = *hItem;
+				tvi.mask = TVIF_IMAGE | TVIF_SELECTEDIMAGE | TVIF_HANDLE;
+				tvi.hItem = hItem;
 
 				if (GameServerList[n].bShow)
 				{
@@ -1982,8 +1946,8 @@ void MC_SEND_ConnectServerInfo()
 		return;
 	}
 
-	int CpuUsage = -999;
-	int MemoryUsage = -999;
+	long CpuUsage = -999;
+	long MemoryUsage = -999;
 
 	PMSG_CONNECTSERVER_INFO pMsg;
 
@@ -2003,19 +1967,19 @@ void MC_SEND_ConnectServerInfo()
 
 		MemoryUsage = g_PerfMonEx.GetCounterValue(g_iPERF_IDX_MEM);
 
-		if (CpuUsage == -999)
+		if (CpuUsage == -999L)
 		{
-			g_LogProc.LogAddFuncColor(LOG_COLOR_RED, "Failed to query PDH CPU counter");
+			g_LogProc.LogAddFuncColor(LOG_COLOR_RED, "FAILED TO QUERY PERFOMANCE : g_PerfMonEx.GetCounterValue(g_iPERF_IDX_CPU)");
 		}
 
-		if (MemoryUsage == -999)
+		if (MemoryUsage == -999L)
 		{
-			g_LogProc.LogAddFuncColor(LOG_COLOR_RED, "Failed to query PDH memory counter");
+			g_LogProc.LogAddFuncColor(LOG_COLOR_RED, "FAILED TO QUERY PERFOMANCE : g_PerfMonEx.GetCounterValue(g_iPERF_IDX_MEM)");
 		}
 	}
 	else
 	{
-		g_LogProc.LogAddFuncColor(LOG_COLOR_RED, "Failed to query PDH data");
+		g_LogProc.LogAddFuncColor(LOG_COLOR_RED, "FAILED TO QUERY PERFOMANCE : g_PerfMonEx.CollectQueryData()");
 	}
 
 	//
@@ -2034,18 +1998,19 @@ void MC_SEND_ConnectServerInfo()
 // =========================================================================
 // MC_RECV_ConnectServerInfo - Process Incoming Multicast Packets
 // =========================================================================
-std::map<int, CSINFO_NODE> g_mapCSINFO_LIST;
-void MC_RECV_ConnectServerInfo(PMSG_CONNECTSERVER_INFO* lpMsg)
+void MC_RECV_ConnectServerInfo(char* lpcBUF, int Size)
 {
+	PMSG_CONNECTSERVER_INFO* lpMsg = (PMSG_CONNECTSERVER_INFO*)lpcBUF;
+
 	if (!lpMsg)
 	{
-		g_LogProc.LogAddFuncColor(2, "MC_RECV_ConnectServerInfo() lpMsg == NULL");
+		g_LogProc.LogAddFuncColor(2, "MC_RECV_ConnectServerInfo ERROR : lpcBUF == NULL");
 		return;
 	}
 
 	if (!inet_ntoa(*(in_addr*)&lpMsg->MultiCastIP))
 	{
-		g_LogProc.LogAddFuncColor(2, "MC_RECV_ConnectServerInfo() inet_ntoa failed");
+		g_LogProc.LogAddFuncColor(2, "MC_RECV_ConnectServerInfo ERROR : lpIPADDR == NULL");
 	}
 
 	EnterCriticalSection(&g_critCSINFO_LIST);
@@ -2132,10 +2097,11 @@ void MC_SEND_CcsShareInfo()
 
 			if (!g_bJoinServerLive)
 			{
+				g_cCCS_INFOSHARE_BUF.Unknown4 = 0;
 				g_cCCS_INFOSHARE_BUF.JoinServerCount = 0;
 			}
 
-			WORD size = MAKEWORD(g_cCCS_INFOSHARE_BUF.sizeL,g_cCCS_INFOSHARE_BUF.sizeH);
+			WORD size = MAKEWORD(g_cCCS_INFOSHARE_BUF.h.sizeL,g_cCCS_INFOSHARE_BUF.h.sizeH);
 			g_CsInfoMultiCast.SendData((char*)&g_cCCS_INFOSHARE_BUF,size);
 
 			goto EXIT_LABEL;
@@ -2143,11 +2109,11 @@ void MC_SEND_CcsShareInfo()
 
 		if (g_bJoinServerLive)
 		{
-			g_cCCS_INFOSHARE_BUF.ShareCount = 0;
-			g_cCCS_INFOSHARE_BUF.c			= PMHC_WORD;
-			g_cCCS_INFOSHARE_BUF.sizeH		= 0;
-			g_cCCS_INFOSHARE_BUF.sizeL		= 0x10;
-			g_cCCS_INFOSHARE_BUF.head		= 0x03;
+			g_cCCS_INFOSHARE_BUF.ShareCount		= 0;
+			g_cCCS_INFOSHARE_BUF.h.c			= PMHC_WORD;
+			g_cCCS_INFOSHARE_BUF.h.sizeH		= 0;
+			g_cCCS_INFOSHARE_BUF.h.sizeL		= 0x10;
+			g_cCCS_INFOSHARE_BUF.h.headcode		= 0x03;
 			goto SEND_PACKET;
 		}
 	}
@@ -2160,15 +2126,17 @@ EXIT_LABEL:
 // =========================================================================
 // MC_RECV_CcsShareInfo - Process Incoming CCS Share Packets
 // =========================================================================
-void MC_RECV_CcsShareInfo(PMSG_CCS_INFOSHARE* lpMsg)
+void MC_RECV_CcsShareInfo(char* lpcBUF, int Size)
 {
+	PMSG_CCS_INFOSHARE* lpMsg = (PMSG_CCS_INFOSHARE*)lpcBUF;
+
 	if (!lpMsg)
 	{
 		g_LogProc.LogAddFuncColor(2, "MC_RECV_CcsShareInfo ERROR : lpcBUF == NULL");
 		return;
 	}
 
-	if (lpMsg->ShareCount > 1000)
+	if (lpMsg->ShareCount < 0 || lpMsg->ShareCount > MAX_GAMESERVERLIST)
 	{
 		g_LogProc.LogAddFuncColor(2, "MC_RECV_CcsShareInfo ERROR : pMsg->iGameServerInfoCount Out of Bound");
 		return;
@@ -2187,45 +2155,111 @@ void MC_RECV_CcsShareInfo(PMSG_CCS_INFOSHARE* lpMsg)
 	g_bJoinServerConnectLimit = FALSE;
 	g_dwJoinServerRefreshTime = GetTickCount();
 
-	if (lpMsg->ShareCount <= 0)
+	if (lpMsg->ShareCount == 0)
 	{
 		LeaveCriticalSection(&gameservercriti);
 		return;
 	}
 
-	for (int n = 0; n < lpMsg->ShareCount; n++)
+	if (!g_bGameServerLive)
 	{
-		PMSG_CCS_INFOLIST* lpInfo = &lpMsg->Entry[n];
+		// No local game server heartbeat yet: the shared list is authoritative.
+		// Index every configured server by code first, then apply the shared entries.
+		std::map<int, GameServerList_Struct*> mapServer;
 
-		for (int i = 0; i < MAX_CONNECTOBJECT; i++)
+		for (int n = 0; n < MAX_GAMESERVERLIST; n++)
 		{
-			GameServerList_Struct* lpServer = &GameServerList[i];
+			if (GameServerList[n].ServerCode != -1)
+			{
+				mapServer.insert(std::make_pair(GameServerList[n].ServerCode, &GameServerList[n]));
+			}
+		}
 
-			if (lpServer->ServerCode != lpInfo->ServerCode)
+		for (int n = 0; n < lpMsg->ShareCount; n++)
+		{
+			PMSG_CCS_INFOLIST* lpInfo = &lpMsg->Entry[n];
+
+			std::map<int, GameServerList_Struct*>::iterator it = mapServer.find(lpInfo->ServerCode);
+
+			if (it == mapServer.end())
 			{
 				continue;
 			}
 
-			lpServer->ServerType = lpInfo->ServerType;
-			lpServer->LiveTime = GetTickCount();
-			lpServer->MaxUserCount =lpInfo->MaxUserCount;
-			lpServer->ServerFlag =lpInfo->ServerFlag;
-			lpServer->PCbangCount =lpInfo->PCbangCount;
-			lpServer->UserCount =lpInfo->UserCount;
+			GameServerList_Struct* lpServer = it->second;
+
+			lpServer->Percent     = (BYTE)lpInfo->ServerType;
+			lpServer->LiveTime    = GetTickCount();
+			lpServer->MaxUserCount = lpInfo->MaxUserCount;
+			lpServer->ServerFlag  = lpInfo->ServerFlag;
+			lpServer->PCbangCount = lpInfo->MaxUserCount - lpInfo->UserCount;
+			lpServer->UserCount   = lpInfo->UserCount;
 
 			if (!lpServer->Live)
 			{
-				g_LogProc.LogAddFunc(" %d(%s) Server update complete. %s(%d)",
-					lpServer->ServerCode,lpServer->Name,lpServer->IpAddress,lpServer->Port);
+				g_LogProc.LogAddFunc(" %d(%s) Server update complete.  %s(%d)",
+					lpServer->ServerCode, lpServer->Name, lpServer->IpAddress, lpServer->Port);
 
-				lpServer->State = 0;
-				lpServer->bShow = 0;
-				memset(lpServer->ServerVersion, 0, 32);
-				memset(lpServer->ClientVersion, 0, 32);
+				lpServer->ExtInfoReceived = 0;
+				lpServer->IsPK = 0;
+				memset(lpServer->ServerVersion, 0, sizeof(lpServer->ServerVersion));
+				memset(lpServer->ClientVersion, 0, sizeof(lpServer->ClientVersion));
 			}
-			lpServer->Live = TRUE;
 
-			break;
+			lpServer->Live = TRUE;
+		}
+	}
+	else
+	{
+		// Local heartbeat is active: only bring currently dead servers up from
+		// the shared list.  Live servers are owned by their own heartbeats.
+		std::map<int, PMSG_CCS_INFOLIST*> mapShare;
+
+		for (int n = 0; n < lpMsg->ShareCount; n++)
+		{
+			mapShare.insert(std::make_pair(lpMsg->Entry[n].ServerCode, &lpMsg->Entry[n]));
+		}
+
+		for (int n = 0; n < MAX_GAMESERVERLIST; n++)
+		{
+			if (GameServerList[n].Live != 0)
+			{
+				continue;
+			}
+
+			if (GameServerList[n].ServerCode == -1)
+			{
+				continue;
+			}
+
+			std::map<int, PMSG_CCS_INFOLIST*>::iterator it = mapShare.find(GameServerList[n].ServerCode);
+
+			if (it == mapShare.end())
+			{
+				continue;
+			}
+
+			PMSG_CCS_INFOLIST* lpInfo = it->second;
+
+			GameServerList[n].Percent     = (BYTE)lpInfo->ServerType;
+			GameServerList[n].LiveTime    = GetTickCount();
+			GameServerList[n].MaxUserCount = lpInfo->MaxUserCount;
+			GameServerList[n].ServerFlag  = lpInfo->ServerFlag;
+			GameServerList[n].PCbangCount = lpInfo->MaxUserCount - lpInfo->UserCount;
+			GameServerList[n].UserCount   = lpInfo->UserCount;
+
+			if (!GameServerList[n].Live)
+			{
+				// Original quirk: logs the entry at the same index as the server
+				// slot, not the entry that actually matched.
+				g_LogProc.LogAddFunc(" %d(%s) Server update complete.  %s(%d)",
+					lpMsg->Entry[n].ServerCode,
+					GameServerList[n].Name,
+					GameServerList[n].IpAddress,
+					GameServerList[n].Port);
+			}
+
+			GameServerList[n].Live = TRUE;
 		}
 	}
 
@@ -2238,18 +2272,20 @@ void MC_RECV_CcsShareInfo(PMSG_CCS_INFOSHARE* lpMsg)
 // =========================================================================
 void MULTICAST_RECVNOTIFY_PROC(CWzMultiCastSock* lpMultiCast, int IpAddress, int Protocol, int SubCode, char* lpMsg, int Size)
 {
+#ifdef __DEBUG_LOG
 	g_LogProc.LogAddFunc("MULTICAST_RECVNOTIFY_PROC Ok!");
+#endif
 	switch (Protocol)
 	{
 	case 0x01:
 	{
-		MC_RECV_ConnectServerInfo((PMSG_CONNECTSERVER_INFO*)lpMsg);
+		MC_RECV_ConnectServerInfo(lpMsg, Size);
 	}
 	break;
 
 	case 0x03:
 	{
-		MC_RECV_CcsShareInfo((PMSG_CCS_INFOSHARE*)lpMsg);
+		MC_RECV_CcsShareInfo(lpMsg, Size);
 	}
 	break;
 	}
@@ -2264,5 +2300,5 @@ void  MULTICAST_ERRORNOTIFY_PROC(CWzMultiCastSock* lpMultiCast, int ErrorCode, c
 	g_LogProc.LogAddFuncColor(2, "MultiCasting Error Occured : %d, %s", ErrorCode, szError);
 	lpMultiCast->EndMultiCast();
 	g_bMultiCastOn = FALSE;
-	SendMessageA(hToolBar, TB_CHECKBUTTON, 0x1F46, MAKELONG(FALSE, 0));
+	SendMessageA(hToolBar, 1067, 8006, 5);
 }

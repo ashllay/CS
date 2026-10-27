@@ -10,12 +10,12 @@ typedef struct
 } PMSG_DEFRESULT, * LPPMSG_DEFRESULT;
 
 //----------------------------------------------------------------------------
-// [0x00] ¡¢º” º≠πˆø° ¡¢º”¿ª Ω√µµ«ﬂ¥Ÿ∏È ¡¢º” ∞·∞˙∏¶ æÀ∏∞¥Ÿ.
+// [0x00] Ï†ëÏÜç ÏÑúÎ≤ÑÏóê Ï†ëÏÜçÏùÑ ÏãúÎèÑÌñàÎã§Î©¥ Ï†ëÏÜç Í≤∞Í≥ºÎ•º ÏïåÎ¶∞Îã§.
 //----------------------------------------------------------------------------
 typedef PMSG_DEFRESULT	PMSG_CONNECTRESULT;
 
 //----------------------------------------------------------------------------
-// [0x01] ≈¨∂Û¿Ãæ∆Æ∞° πˆ¡Ø ¡§∫∏∏¶ ∫∏≥Ω¥Ÿ.
+// [0x01] ÌÅ¥ÎùºÏù¥Ïñ∏Ìä∏Í∞Ä Î≤ÑÏ†º Ï†ïÎ≥¥Î•º Î≥¥ÎÇ∏Îã§.
 //----------------------------------------------------------------------------
 typedef struct
 {
@@ -37,8 +37,8 @@ struct PMSG_VERSION_NEW
 typedef struct
 {
     PWMSG_HEAD2	h;
-    BYTE	CountH;
-    BYTE	CountL;
+    BYTE	Index;
+    BYTE	Percent;
 } PMSG_SERVERLISTCOUNT;
 
 struct PMSG_SERVERLIST
@@ -49,33 +49,39 @@ struct PMSG_SERVERLIST
 };
 
 
-#pragma pack(push, 1)
-
-typedef struct
+#pragma pack(push,1)
+struct PMSG_SERVER_USERCOUNT
 {
-    DWORD ServerCode;
-
-    WORD MaxUserCount;
-    WORD FreeUserSlots;
-
-    WORD UserCount;
-
-    BYTE ServerType;
-    //BYTE unk;
-
-    WORD ServerFlag;
-
-} PMSG_SERVER_USERCOUNT;
-
+    WORD ServerCode;    // +0
+    WORD MaxUserCount;  // +2
+    WORD FreeUserSlots; // +4 (MaxUserCount - UserCount)
+    WORD UserCount;     // +6
+    BYTE Percent;       // +8
+    BYTE Reserved;      // +9 (never initialized)
+    WORD ServerFlag;    // +10
+};
 #pragma pack(pop)
 
 //----------------------------------------------------------------------------
-// [0x01] æ˜µ•¿Ã∆Æ∞° « ø‰«œ¥Ÿ.. FTPº≠πˆ ¡§∫∏∏¶ æÀ∑¡¡ÿ¥Ÿ.
+// [0x01] ÏóÖÎç∞Ïù¥Ìä∏Í∞Ä ÌïÑÏöîÌïòÎã§.. FTPÏÑúÎ≤Ñ Ï†ïÎ≥¥Î•º ÏïåÎ†§Ï§ÄÎã§.
 //----------------------------------------------------------------------------
 struct PMSG_FILESERVERINFO
 {
     PBMSG_HEAD h;
     BYTE ClientVersion[3];
+    char IpAddress[100];
+    WORD Port;
+    char FtpId[20];
+    char FtpPass[20];
+    char Folder[20];
+};
+
+// Same payload, but only two version bytes are written (ClientV1/ClientV2).
+// IpAddress therefore starts at +5 and Port needs one pad byte at +105.
+struct PMSG_FILESERVERINFO_OLD
+{
+    PBMSG_HEAD h;
+    BYTE ClientVersion[2];
     char IpAddress[100];
     WORD Port;
     char FtpId[20];
@@ -93,13 +99,13 @@ struct PMSG_FILESERVERINFO_CCS
 // [0xF4][0x03] Request game server IP/Port
 struct PMSG_GAMESERVERIPPORT_REQUEST {
     PBMSG_HEAD2 h;
-    BYTE pos;  // Server index
+    WORD pos;  // Server index
 };
 
 // [0xF4][0x03] Response with game server IP/Port
 struct PMSG_GAMESERVERIPPORT {
     PBMSG_HEAD2 h;
-    char ServerIp[15];
+    char ServerIp[16];
     WORD port;
 };
 // [0x02] Server list request
@@ -108,25 +114,6 @@ typedef struct
     PBMSG_HEAD	h;
 } PMSG_SERVERLISTREQUEST, * LPPMSG_SERVERLISTREQUEST;
 
-#define SERVERCODE_EXPAND
-
-typedef struct
-{
-    PBMSG_HEAD	h;
-#ifdef SERVERCODE_EXPAND	
-    short	ServerCode;
-#else
-    BYTE	ServerCode;
-#endif
-    BYTE	Percent;
-    short	UserCount;
-    short   AccountCount;
-    short	PCbangCount;
-    short	MaxUserCount;
-} PMSG_SERVERINFO, * LPPMSG_SERVERINFO;
-//----------------------------------------------------------------------------
-// CS UDP [0x02] ¿Œ¡ı º≠πˆ¿« RecvQ ƒ´øÓ∆Æ∏¶ ¿¸º€ πﬁ¥¬¥Ÿ
-//----------------------------------------------------------------------------
 typedef struct
 {
     PBMSG_HEAD	h;
@@ -134,21 +121,17 @@ typedef struct
 } PMSG_JOINSERVER_STAT, * LPPMSG_JOINSERVER_STAT;
 
 
-#pragma pack(push, 1)
-
 struct PMSG_CONNECTSERVER_INFO
 {
-    PBMSG_HEAD h;
+    PBMSG_HEAD h;           // +0 (3 bytes, one pad byte follows)
 
-    DWORD MultiCastIP;
-    DWORD PersonalShopIP;
+    DWORD MultiCastIP;      // +4
+    DWORD PersonalShopIP;   // +8
 
-    int ConnectionCount;
-    int CpuUsage;
-    int MemoryUsage;
+    int ConnectionCount;    // +12
+    int CpuUsage;           // +16
+    int MemoryUsage;        // +20
 };
-
-#pragma pack(pop)
 
 struct PMSG_DEFAULT
 {
@@ -156,36 +139,47 @@ struct PMSG_DEFAULT
     BYTE subcode;
 };
 
+// [0x..] ConnectServer list version notify.
+// The original handler CSConnectListVersionRecv() is an empty stub,
+// so only the header is known.
+struct PMSG_CONSERVER_VERSION
+{
+    PBMSG_HEAD h;
+};
+
 // Function Prototypes
 void ProtocolCore(BYTE protoNum, BYTE* aRecv, int aLen, short aIndex);
 void UpdateGameServerList(int aIndex);
 void ReqGameServerList(int aIndex);
-void SCConnectResultSend(char result, unsigned int aIndex);
-void ChangeGameServerList();
+void SCConnectResultSend(BYTE result, int aIndex);
+void ChangeGameServerList(unsigned char* lpMsg, int aIndex);
 void CSVersionRecv_OLD(PMSG_VERSION_OLD* lpMsg, int aIndex);
 void CSVersionRecv_NEW(PMSG_VERSION_NEW* aRecv, int aIndex);
 void CSVersionRecv_TEST(PMSG_VERSION_NEW* aRecv, int aIndex);
 void CSVersionRecv_LOCALTEST(PMSG_VERSION_NEW* aRecv, int aIndex);
-void SCNoUpdateSend(unsigned int aIndex);
+void SCNoUpdateSend(int aIndex);
 void CFileServerInfoMake();
 void CFileServerInfoMake_CCS();
 void CServerListMake();
 void CServerUserCountListMake();
-void SCFileServerInfoSend_OLD(unsigned int aIndex);
-void SCFileServerInfoSend_NEW(unsigned int aIndex);
-void SCFileServerInfoSend_LOCALTEST(unsigned int aIndex);
-void SCFileServerInfoSend_CCS(unsigned int aIndex);
-void SCNoUpdateSend_CCS(unsigned int aIndex);
-void SCHTTPFileServerInfoSend(unsigned int aIndex);
-void CSGetServerListRecv(PMSG_SERVERLISTREQUEST* aRecv, unsigned int aIndex);
+void SCFileServerInfoSend_OLD(int aIndex);
+void SCFileServerInfoSend_NEW(int aIndex);
+void SCFileServerInfoSend_LOCALTEST(int aIndex);
+void SCFileServerInfoSend_CCS(int aIndex);
+void SCNoUpdateSend_CCS(int aIndex);
+void SCHTTPFileServerInfoSend(int aIndex);
+void CSGetServerListRecv(PMSG_SERVERLISTREQUEST* aRecv, int aIndex);
 void CSGetServerListSend(int aIndex);
-void CSGetServerUserCount(unsigned int aIndex);
-void CSGetServerIpPort(PMSG_GAMESERVERIPPORT_REQUEST* lpMsg, unsigned int aIndex);
+void CSGetServerUserCount(int aIndex);
+void CSGetServerIpPort(PMSG_GAMESERVERIPPORT_REQUEST* lpMsg, int aIndex);
 void SendJoinServerBusy(int aIndex, BYTE pos);
 void GSINFO_PACKETPROC_RECV(unsigned int Serial, void* lpObj, BYTE HeadCode, BYTE SubCode, char* lpMsg);
 void GSINFO_PACKETPROC_OTHER(unsigned int a1, int a2, void* a3, CWzTcpSock* aIndex); // idb
 
-void CSConnectListVersionRecv();
+void MC_RECV_ConnectServerInfo(char* lpMsg, int Size);
+void MC_RECV_CcsShareInfo(char* lpMsg, int Size);
+
+void CSConnectListVersionRecv(PMSG_CONSERVER_VERSION* lpMsg, int aIndex);
 
 #define MAX_JOINSERVER_RECVQ_LIMIT		150
 

@@ -4,17 +4,36 @@
 #include "Protocol.h"
 #include "WzUdp.h"
 
-#pragma pack(push, 1)
+#define SERVERCODE_EXPAND
+
 typedef struct
 {
-	PBMSG_HEAD h;
-	DWORD ServerCode;
-	BYTE ServerType;
-	char ServerVersion[32];
-	char ClientVersion[32];
+    PBMSG_HEAD	h;
+#ifdef SERVERCODE_EXPAND	
+    short	ServerCode;
+#else
+    BYTE	ServerCode;
+#endif
+    BYTE	Percent;
+    short	UserCount;
+    short   AccountCount;
+    short	PCbangCount;
+    short	MaxUserCount;
+} PMSG_SERVERINFO, * LPPMSG_SERVERINFO;
+//----------------------------------------------------------------------------
+// CS UDP [0x02] 인증 서버의 RecvQ 카운트를 전송 받는다
+//----------------------------------------------------------------------------
+
+typedef struct
+{
+	PBMSG_HEAD	h;
+	BYTE		subcode;
+	DWORD		ServerCode;
+	BYTE		btIsPK;
+	char		ServerVersion[32];
+	char		ClientVersion[32];
 
 } PMSG_GAMESERVER_EXTINFO, * LPPMSG_GAMESERVER_EXTINFO;
-#pragma pack(pop)
 
 void UdpProtocolCore(BYTE protoNum, BYTE* aRecv, int aLen, char* ip);
 void GameServerInfo(PMSG_SERVERINFO* lpMsg);

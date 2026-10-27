@@ -38,8 +38,16 @@
 #include "LogProc.h"
 #include "LogToFile.h"
 #include "LogToListBox.h"
-#include "CriticalSec.h"
 
 #define CONNECT_SERVER_VERSION "20060123"
 //#define __DEBUG_LOG
+
+void WzLog(char* msg, ...);
+void WzLog2(char* msg, ...);
+void WzLog3(char* msg, ...);
+void WzLog4(char* msg, ...);
+void WzLog5(char* msg, ...);
+
+extern CLogProc g_LogProc;
 extern CLogToFile g_LogGSInfo;
+extern CLogToFile g_LogFileError;

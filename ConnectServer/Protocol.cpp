@@ -24,7 +24,7 @@ int nFileServerInfoBufferLen_LocalTest = 0;
 char szHTTPFileServerInfoSendBuffer[256];
 int nHTTPFileServerInfoBufferLen = 0;
 
-char szNoUpdateInfoSendBuffer[16];
+char szNoUpdateInfoSendBuffer[256];
 int nNoUpdateInfoBufferLen = 0;
 
 char szServerListSendBuffer[4096];
@@ -63,7 +63,7 @@ void ProtocolCore(BYTE protoNum, BYTE* aRecv, int aLen, short aIndex)
         ReqGameServerList(aIndex);
         break;
     case 0x12:
-        ChangeGameServerList();
+        ChangeGameServerList(aRecv, aLen);
         break;
     case 0xF4:
     {
@@ -91,7 +91,7 @@ void ProtocolCore(BYTE protoNum, BYTE* aRecv, int aLen, short aIndex)
 		switch (lpDef->subcode)
 		{
 		case 0x00:
-			CSConnectListVersionRecv();
+			CSConnectListVersionRecv(reinterpret_cast<PMSG_CONSERVER_VERSION*>(aRecv), aIndex);
 		}
 	}
 	break;
@@ -144,8 +144,8 @@ void ReqGameServerList(int aIndex)
     pCount.h.subcode    = 0x00;
     pCount.h.sizeH      = SET_NUMBERH(lOfs);
     pCount.h.sizeL      = SET_NUMBERL(lOfs);
-    pCount.CountH       = SET_NUMBERH(count);
-    pCount.CountL       = SET_NUMBERL(count);
+    pCount.Index        = SET_NUMBERH(count);
+    pCount.Percent      = SET_NUMBERL(count);
 
     memcpy(GameServerInfo,&pCount,sizeof(pCount));
 
@@ -154,14 +154,15 @@ void ReqGameServerList(int aIndex)
     IoSend(aIndex, (LPBYTE)GameServerInfo, iLen);
 }
 
-void ChangeGameServerList()
+// Empty in the original (0x409F80): the arguments are pushed but never used.
+void ChangeGameServerList(unsigned char* lpMsg, int aIndex)
 {
     ;
 }
 // =========================================================================
 // SCConnectResultSend - Send Connection Result
 // =========================================================================
-void SCConnectResultSend(char result, unsigned int aIndex)
+void SCConnectResultSend(BYTE result, int aIndex)
 {
     PMSG_CONNECTRESULT pMsg;
     pMsg.h.c        = PMHC_BYTE;
@@ -263,7 +264,7 @@ void CSVersionRecv_LOCALTEST(PMSG_VERSION_NEW* aRecv, int aIndex)
 // File Server Info Sending
 // =========================================================================
 
-void SCNoUpdateSend(unsigned int aIndex)
+void SCNoUpdateSend(int aIndex)
 {
     PMSG_DEFRESULT pMsg;
     pMsg.h.c        = PMHC_BYTE;
@@ -283,7 +284,7 @@ void CFileServerInfoMake()
     // OLD CLIENT UPDATE PACKET (0x01)
     // --------------------------------------------------------------------
 
-    PMSG_FILESERVERINFO pOld;
+    PMSG_FILESERVERINFO_OLD pOld;
 
     pOld.h.c        = PMHC_BYTE;
     pOld.h.size     = sizeof(pOld);
@@ -291,7 +292,6 @@ void CFileServerInfoMake()
 
     pOld.ClientVersion[0] = ClientV1;
     pOld.ClientVersion[1] = ClientV2;
-    pOld.ClientVersion[2] = 0;
 
     strcpy(pOld.IpAddress, FtpServerIpAddress);
     strcpy(pOld.FtpId, FtpServerID);
@@ -305,9 +305,9 @@ void CFileServerInfoMake()
     BuxConvert(pOld.FtpPass, 20);
     BuxConvert(pOld.Folder, 20);
 
-    memcpy(szFileServerInfoSendBuffer_Old, &pOld, sizeof(PMSG_FILESERVERINFO));
+    memcpy(szFileServerInfoSendBuffer_Old, &pOld, sizeof(pOld));
 
-    nFileServerInfoBufferLen_Old = sizeof(PMSG_FILESERVERINFO);
+    nFileServerInfoBufferLen_Old = sizeof(pOld);
 
     // --------------------------------------------------------------------
     // NEW CLIENT UPDATE PACKET (0x05)
@@ -320,8 +320,7 @@ void CFileServerInfoMake()
     pNew.h.headcode = 0x05;
 
     pNew.ClientVersion[0] = ClientV1;
-    pNew.ClientVersion[1] = ClientV2;
-    pNew.ClientVersion[2] = ClientV3;
+    pNew.ClientVersion[1] = ClientV3;   // ClientVersion[2] (+5) is left untouched
 
     strcpy(pNew.IpAddress, FtpServerIpAddress);
     strcpy(pNew.FtpId, FtpServerID);
@@ -345,15 +344,12 @@ void CFileServerInfoMake()
 
     PMSG_FILESERVERINFO_CCS pCCS;
 
-    memset(&pCCS, 0, sizeof(pCCS));
-
     pCCS.info.h.c           = PMHC_BYTE;
-    pCCS.info.h.size        = sizeof(PMSG_FILESERVERINFO);
+    pCCS.info.h.size        = sizeof(pCCS);
     pCCS.info.h.headcode    = 0x05;
 
     pCCS.info.ClientVersion[0] = ClientV1;
-    pCCS.info.ClientVersion[1] = ClientV2;
-    pCCS.info.ClientVersion[2] = ClientV3;
+    pCCS.info.ClientVersion[1] = ClientV3;  // ClientVersion[2] (+5) is left untouched
 
     strcpy(pCCS.info.IpAddress, FtpServerIpAddress);
     strcpy(pCCS.info.FtpId, FtpServerID);
@@ -384,8 +380,7 @@ void CFileServerInfoMake()
     pLocal.h.headcode   = 0x07;
 
     pLocal.ClientVersion[0] = ClientV1;
-    pLocal.ClientVersion[1] = ClientV2;
-    pLocal.ClientVersion[2] = ClientV3;
+    pLocal.ClientVersion[1] = ClientV3;     // ClientVersion[2] (+5) is left untouched
 
     strcpy(pLocal.IpAddress, FtpServerIpAddress_LocalTest);
     strcpy(pLocal.FtpId, FtpServerID_LocalTest);
@@ -420,15 +415,14 @@ void CFileServerInfoMake()
     // HTTP UPDATE PACKET
     // --------------------------------------------------------------------
 
-    PMSG_FILESERVERINFO pHTTP;
+    PMSG_FILESERVERINFO_OLD pHTTP;
 
     pHTTP.h.c           = PMHC_BYTE;
-    pHTTP.h.size        = sizeof(PMSG_FILESERVERINFO);
+    pHTTP.h.size        = sizeof(pHTTP);
     pHTTP.h.headcode    = 0x04;
 
     pHTTP.ClientVersion[0] = ClientV1;
     pHTTP.ClientVersion[1] = ClientV2;
-    pHTTP.ClientVersion[2] = 0;
 
     strcpy(pHTTP.IpAddress, HTTPServerIpAddress);
     strcpy(pHTTP.FtpId, HTTPServerID);
@@ -442,51 +436,116 @@ void CFileServerInfoMake()
     BuxConvert(pHTTP.FtpPass, 20);
     BuxConvert(pHTTP.Folder, 20);
 
-    memcpy(szHTTPFileServerInfoSendBuffer, &pHTTP, sizeof(PMSG_FILESERVERINFO));
+    memcpy(szHTTPFileServerInfoSendBuffer, &pHTTP, sizeof(pHTTP));
 
-    nHTTPFileServerInfoBufferLen = sizeof(PMSG_FILESERVERINFO);
+    nHTTPFileServerInfoBufferLen = sizeof(pHTTP);
 }
 
 // =========================================================================
-// CFileServerInfoMake_CCS - Dynamic CCS Info Generation
+// CFileServerInfoMake_CCS - Append the Multicast Server IP List
 // =========================================================================
 void CFileServerInfoMake_CCS()
 {
-    // This function dynamically builds the CCS packet based on active multicast nodes.
-    // Since we simplified the multicast map in previous steps, we will generate a static
-    // valid packet for now, or iterate a simple list if available.
-
     EnterCriticalSection(&g_critCSINFO_LIST);
 
-    // If multicast is off, send empty/default CCS packet
-    if (!g_bMultiCastOn)
+    int count = 0;
+
+    bool bEmpty  = g_mapCSINFO_LIST.empty();
+    bool bRemake = false;
+
+    if (!bEmpty)
     {
-        // Reset to default empty state
-        szFileServerInfoSendBuffer_CCS[0] = PMHC_BYTE;
-        szFileServerInfoSendBuffer_CCS[1] = 0x08; // Size
-        szFileServerInfoSendBuffer_CCS[2] = 0xAA; // HeadCode Hi?
-        szFileServerInfoSendBuffer_CCS[3] = 0xDF; // HeadCode Lo?
-        // ... fill rest with defaults ...
-        nFileServerInfoBufferLen_CCS = 170;
-        LeaveCriticalSection(&g_critCSINFO_LIST);
-        return;
+        if (g_mapCSINFO_LIST.size() != g_mapCSINFO_LIST_OLD.size())
+        {
+            bRemake = true;
+        }
+        else
+        {
+            // The original compares the two lists by MultiCastIP (O(n^2))
+            for (std::map<int, CSINFO_NODE>::iterator it = g_mapCSINFO_LIST.begin();
+                 it != g_mapCSINFO_LIST.end() && !bRemake; ++it)
+            {
+                bool bFound = false;
+
+                for (std::map<int, CSINFO_NODE>::iterator itOld = g_mapCSINFO_LIST_OLD.begin();
+                     itOld != g_mapCSINFO_LIST_OLD.end(); ++itOld)
+                {
+                    if (itOld->second.MultiCastIP == it->second.MultiCastIP)
+                    {
+                        bFound = true;
+                        break;
+                    }
+                }
+
+                if (!bFound)
+                    bRemake = true;
+            }
+
+            if (!bRemake && g_bMULTICAST_LIST_REMAKE == 1)
+                bRemake = true;
+        }
     }
 
-    // If multicast is on, build dynamic packet
-    // Note: The original IDA code iterates a std::map of CSINFO_NODE.
-    // Without the full map implementation, we will assume a static count or 
-    // use the global GameServerList if it reflects the cluster state.
+    if (bEmpty || bRemake)
+    {
+        if (bEmpty)
+        {
+            // No multicast peer at all: announce an empty list
+            szFileServerInfoSendBuffer_CCS[0] = PMHC_BYTE;
+            szFileServerInfoSendBuffer_CCS[1] = 0xAA;
+            szFileServerInfoSendBuffer_CCS[2] = 0x08;
+            szFileServerInfoSendBuffer_CCS[168] = 0;
+            szFileServerInfoSendBuffer_CCS[169] = 0;
+            nFileServerInfoBufferLen_CCS = 0xAA;
 
-    // For this clean implementation, we'll rebuild the static CCS buffer 
-    // generated in CFileServerInfoMake(), as it's safer than partial map logic.
-    // In a full implementation, you would iterate g_mapCSINFO_LIST here.
+            szNoUpdateInfoSendBuffer[0] = PMHC_BYTE;
+            szNoUpdateInfoSendBuffer[1] = 6;
+            szNoUpdateInfoSendBuffer[2] = 0x03;
+            szNoUpdateInfoSendBuffer[4] = 0;
+            szNoUpdateInfoSendBuffer[5] = 0;
+            nNoUpdateInfoBufferLen = 6;
 
-    CFileServerInfoMake(); // Regenerate static buffers as fallback/simplification
+            if (!g_bMultiCastOn)
+            {
+                LeaveCriticalSection(&g_critCSINFO_LIST);
+                return;
+            }
+        }
+        else
+        {
+            g_bMULTICAST_LIST_REMAKE = 0;
+
+            for (std::map<int, CSINFO_NODE>::iterator it = g_mapCSINFO_LIST.begin();
+                 it != g_mapCSINFO_LIST.end(); ++it)
+            {
+                *(DWORD*)(szFileServerInfoSendBuffer_CCS + sizeof(PMSG_FILESERVERINFO_CCS) + (4 * count)) = (DWORD)it->second.MultiCastIP;
+                *(DWORD*)(szNoUpdateInfoSendBuffer + 6 + (4 * count)) = (DWORD)it->second.MultiCastIP;
+                ++count;
+            }
+
+            szFileServerInfoSendBuffer_CCS[0] = PMHC_BYTE;
+            szFileServerInfoSendBuffer_CCS[1] = (BYTE)((4 * count) + 0xAA);
+            szFileServerInfoSendBuffer_CCS[2] = 0x08;
+            szFileServerInfoSendBuffer_CCS[168] = 1;
+            szFileServerInfoSendBuffer_CCS[169] = (BYTE)count;
+            nFileServerInfoBufferLen_CCS = szFileServerInfoSendBuffer_CCS[1];	// truncated to a byte like the original
+
+            szNoUpdateInfoSendBuffer[0] = PMHC_BYTE;
+            szNoUpdateInfoSendBuffer[1] = (BYTE)((4 * count) + 6);
+            szNoUpdateInfoSendBuffer[2] = 0x03;
+            szNoUpdateInfoSendBuffer[4] = 1;
+            szNoUpdateInfoSendBuffer[5] = (BYTE)count;
+            nNoUpdateInfoBufferLen = szNoUpdateInfoSendBuffer[1];
+        }
+    }
+
+    // Keep a snapshot used to detect changes on the next call
+    g_mapCSINFO_LIST_OLD = g_mapCSINFO_LIST;
 
     LeaveCriticalSection(&g_critCSINFO_LIST);
 }
 
-void SCNoUpdateSend_CCS(unsigned int aIndex)
+void SCNoUpdateSend_CCS(int aIndex)
 {
     if (nNoUpdateInfoBufferLen > 0)
     {
@@ -494,7 +553,7 @@ void SCNoUpdateSend_CCS(unsigned int aIndex)
     }
 }
 
-void SCFileServerInfoSend_OLD(unsigned int aIndex)
+void SCFileServerInfoSend_OLD(int aIndex)
 {
     if (g_iDownLoadType == 1) // HTTP
     {
@@ -506,7 +565,7 @@ void SCFileServerInfoSend_OLD(unsigned int aIndex)
     }
 }
 
-void SCFileServerInfoSend_NEW(unsigned int aIndex)
+void SCFileServerInfoSend_NEW(int aIndex)
 {
     if (g_iDownLoadType == 1)
     {
@@ -518,7 +577,7 @@ void SCFileServerInfoSend_NEW(unsigned int aIndex)
     }
 }
 
-void SCFileServerInfoSend_LOCALTEST(unsigned int aIndex)
+void SCFileServerInfoSend_LOCALTEST(int aIndex)
 {
     if (g_iDownLoadType == 1)
     {
@@ -530,7 +589,7 @@ void SCFileServerInfoSend_LOCALTEST(unsigned int aIndex)
     }
 }
 
-void SCFileServerInfoSend_CCS(unsigned int aIndex)
+void SCFileServerInfoSend_CCS(int aIndex)
 {
     if (g_iDownLoadType == 1)
     {
@@ -542,7 +601,7 @@ void SCFileServerInfoSend_CCS(unsigned int aIndex)
     }
 }
 
-void SCHTTPFileServerInfoSend(unsigned int aIndex)
+void SCHTTPFileServerInfoSend(int aIndex)
 {
     if (nHTTPFileServerInfoBufferLen > 0)
     {
@@ -569,7 +628,7 @@ void CServerListMake()
 
             pSL.ServerCode = GameServerList[n].ServerCode;
             pSL.Percent = GameServerList[n].Percent;
-            pSL.Type = GameServerList[n].ServerType;
+            pSL.Type = GameServerList[n].IsPK;
 
             memcpy(szServerListSendBuffer + lOfs,&pSL,sizeof(pSL));
 
@@ -593,8 +652,8 @@ void CServerListMake()
     pCount.h.subcode    = 0x06;
     pCount.h.sizeH      = SET_NUMBERH(lOfs);
     pCount.h.sizeL      = SET_NUMBERL(lOfs);
-    pCount.CountH       = SET_NUMBERH(count);
-    pCount.CountL       = SET_NUMBERL(count);
+    pCount.Index        = SET_NUMBERH(count);
+    pCount.Percent      = SET_NUMBERL(count);
 
     memcpy(szServerListSendBuffer,&pCount,sizeof(pCount));
 
@@ -605,14 +664,9 @@ void CSendSelectionServerList(int aIndex)
 {
     PMSG_SERVERLIST			pSL;
     int						count = 0;
-
     int		lOfs = sizeof(PMSG_SERVERLISTCOUNT);
 
     EnterCriticalSection(&gameservercriti);
-#ifdef _DEBUG
-    //printf("--------------------------------------------------------------\n");
-    //printf("--ServerList ReMake Start\n");
-#endif
 
     for (int n = 0; n < MAX_GAMESERVERLIST; n++)
     {
@@ -620,22 +674,12 @@ void CSendSelectionServerList(int aIndex)
         {
             pSL.ServerCode = GameServerList[n].ServerCode;
             pSL.Percent = GameServerList[n].Percent;
-            pSL.Type = GameServerList[n].ServerType;
+            pSL.Type = GameServerList[n].IsPK;
             memcpy((szSelectionServerListSendBuffer + lOfs), (char*)&pSL, sizeof(pSL));
-
-#ifdef _DEBUG
-            //printf("Index = %d, Name = %s, ServerCode = %d, Percent = %d\n", 
-            //	   n, GameServerList[n].Name, pSL.ServerCode, pSL.Percent);
-#endif
-
             lOfs += sizeof(pSL);
             count++;
         }
     }
-#ifdef _DEBUG		
-    //printf("--ServerList ReMake End\n");
-    //printf("--------------------------------------------------------------\n");
-#endif
 
     if (count < 1)
     {
@@ -649,8 +693,52 @@ void CSendSelectionServerList(int aIndex)
     pCount.h.subcode    = 0x06;// 0x02; changed to 0x06
     pCount.h.sizeH      = SET_NUMBERH(lOfs);
     pCount.h.sizeL      = SET_NUMBERL(lOfs);
-    pCount.CountH       = SET_NUMBERH(count);
-    pCount.CountL       = SET_NUMBERL(count);
+    pCount.Index        = SET_NUMBERH(count);
+    pCount.Percent      = SET_NUMBERL(count);
+    memcpy(szSelectionServerListSendBuffer, (char*)&pCount, sizeof(pCount));
+    IoSend(aIndex, (LPBYTE)szSelectionServerListSendBuffer, lOfs);
+    LeaveCriticalSection(&gameservercriti);
+}
+
+// =========================================================================
+// CSendSelectionServerList_Japan - Only servers located in JAPAN
+// (dead code in the original: built but never called)
+// =========================================================================
+void CSendSelectionServerList_Japan(int aIndex)
+{
+    PMSG_SERVERLIST			pSL;
+    int						count = 0;
+    int		lOfs = sizeof(PMSG_SERVERLISTCOUNT);
+
+    EnterCriticalSection(&gameservercriti);
+
+    for (int n = 0; n < MAX_GAMESERVERLIST; n++)
+    {
+        if (!strcmp(GameServerList[n].ServerLocation, "JAPAN"))
+        {
+            pSL.ServerCode = GameServerList[n].ServerCode;
+            pSL.Percent = GameServerList[n].Percent;
+            pSL.Type = GameServerList[n].IsPK;
+            memcpy((szSelectionServerListSendBuffer + lOfs), (char*)&pSL, sizeof(pSL));
+            lOfs += sizeof(pSL);
+            count++;
+        }
+    }
+
+    if (count < 1)
+    {
+        LeaveCriticalSection(&gameservercriti);
+        return;
+    }
+
+    PMSG_SERVERLISTCOUNT	pCount;
+    pCount.h.c          = PMHC_WORD;
+    pCount.h.headcode   = 0xF4;
+    pCount.h.subcode    = 0x06;
+    pCount.h.sizeH      = SET_NUMBERH(lOfs);
+    pCount.h.sizeL      = SET_NUMBERL(lOfs);
+    pCount.Index        = SET_NUMBERH(count);
+    pCount.Percent      = SET_NUMBERL(count);
     memcpy(szSelectionServerListSendBuffer, (char*)&pCount, sizeof(pCount));
     IoSend(aIndex, (LPBYTE)szSelectionServerListSendBuffer, lOfs);
     LeaveCriticalSection(&gameservercriti);
@@ -668,23 +756,17 @@ void CServerUserCountListMake()
 
     for (int n = 0; n < MAX_GAMESERVERLIST; n++)
     {
-        //GAMESERVER_INFO* lpInfo = &GameServerList[n];
-
-       //if (lpInfo->Live)
-        if (GameServerList[n].Live && GameServerList[n].bShow)
+        if (GameServerList[n].Live)
         {
             PMSG_SERVER_USERCOUNT pSL;
 
-            pSL.ServerCode = GameServerList[n].ServerCode;
-            pSL.MaxUserCount = GameServerList[n].MaxUserCount;
-
-            pSL.UserCount = GameServerList[n].UserCount;
+            pSL.ServerCode    = GameServerList[n].ServerCode;
+            pSL.MaxUserCount  = GameServerList[n].MaxUserCount;
             pSL.FreeUserSlots = GameServerList[n].MaxUserCount - GameServerList[n].UserCount;
-
-            pSL.ServerType = GameServerList[n].ServerType;
-            //pSL.unk = 0;
-
-            pSL.ServerCode = GameServerList[n].ServerCode;
+            pSL.UserCount     = GameServerList[n].UserCount;
+            pSL.Percent       = GameServerList[n].Percent;
+            // pSL.Reserved (+9) stays uninitialized, exactly like the original
+            pSL.ServerFlag    = GameServerList[n].ServerFlag;
 
             memcpy(szServerUserCountSendBuffer + lOfs,&pSL,sizeof(pSL));
 
@@ -697,7 +779,8 @@ void CServerUserCountListMake()
 
     if (count < 1)
     {
-        nServerUserCountBufferLen = 0;
+        // Original bug: clears the server list length instead of the user count one
+        nServerListBufferLen = 0;
         return;
     }
 
@@ -708,8 +791,8 @@ void CServerUserCountListMake()
     pCount.h.subcode    = 0x07;
     pCount.h.sizeH      = SET_NUMBERH(lOfs);
     pCount.h.sizeL      = SET_NUMBERL(lOfs);
-    pCount.CountH       = SET_NUMBERH(count);
-    pCount.CountL       = SET_NUMBERL(count);
+    pCount.Index        = SET_NUMBERH(count);
+    pCount.Percent      = SET_NUMBERL(count);
 
     memcpy(szServerUserCountSendBuffer,&pCount,sizeof(pCount));
 
@@ -720,7 +803,7 @@ void CServerUserCountListMake()
 // Request Handlers
 // =========================================================================
 
-void CSGetServerListRecv(PMSG_SERVERLISTREQUEST* aRecv, unsigned int aIndex)
+void CSGetServerListRecv(PMSG_SERVERLISTREQUEST* aRecv, int aIndex)
 {
     if (GSListCount > 0)
     {
@@ -740,7 +823,7 @@ void CSGetServerListSend(int aIndex)
     // Default to standard list
     if (!strcmp(gObj[aIndex].m_Ip, "218.234.76.254") || 
         !strncmp(gObj[aIndex].m_Ip, "172.30.120", 6))
-    {	// ³»ºÎ ¾ÆÀÌÇÇÀÏ¶§¸¸ ¼±º°Àû ¼­¹ö¸®½ºÆ® Àü¼ÛÀÌ ÀÌ·ç¾îÁø´Ù
+    {	// ë‚´ë¶€ ì•„ì´í”¼ì¼ë•Œë§Œ ì„ ë³„ì  ì„œë²„ë¦¬ìŠ¤íŠ¸ ì „ì†¡ì´ ì´ë£¨ì–´ì§„ë‹¤
         CSendSelectionServerList(aIndex);
     }
     else
@@ -749,7 +832,7 @@ void CSGetServerListSend(int aIndex)
     }
 }
 
-void CSGetServerUserCount(unsigned int aIndex)
+void CSGetServerUserCount(int aIndex)
 {
     gObjSetTime(aIndex);
     if (nServerUserCountBufferLen > 0)
@@ -758,16 +841,16 @@ void CSGetServerUserCount(unsigned int aIndex)
     }
 }
 
-void CSGetServerIpPort(PMSG_GAMESERVERIPPORT_REQUEST* lpMsg, unsigned int aIndex)
+void CSGetServerIpPort(PMSG_GAMESERVERIPPORT_REQUEST* lpMsg, int aIndex)
 {
-    BYTE pos = lpMsg->pos;
+    WORD pos = lpMsg->pos;
     if (pos > MAX_GAMESERVERLIST - 1)
         pos = 0;
 
     // Check join server load limits
     if (g_JoinServerRecvQCount > MAX_JOINSERVER_RECVQ_LIMIT || g_bJoinServerConnectLimit > 200)
     {
-        SendJoinServerBusy(aIndex, pos);
+        SendJoinServerBusy(aIndex, (BYTE)pos);
         return;
     }
 
@@ -780,13 +863,13 @@ void CSGetServerIpPort(PMSG_GAMESERVERIPPORT_REQUEST* lpMsg, unsigned int aIndex
     pGSInfo.h.c         = PMHC_BYTE;
     pGSInfo.h.headcode  = 0xF4;
     pGSInfo.h.size      = sizeof(pGSInfo);
-    pGSInfo.h.subcode     = 0x03;
+    pGSInfo.h.subcode   = 0x03;
 
     EnterCriticalSection(&gameservercriti);
 
     if (GameServerList[pos].Live)
     {
-        strcpy_s(pGSInfo.ServerIp, GameServerList[pos].IpAddress);
+        strcpy(pGSInfo.ServerIp, GameServerList[pos].IpAddress);
         pGSInfo.port = (GameServerList[pos].Port);
 
         LeaveCriticalSection(&gameservercriti);
@@ -829,6 +912,6 @@ void GSINFO_PACKETPROC_OTHER(unsigned int a1, int a2, void* a3, CWzTcpSock* aInd
 {
 }
 
-void CSConnectListVersionRecv()
+void CSConnectListVersionRecv(PMSG_CONSERVER_VERSION* lpMsg, int aIndex)
 {
 }

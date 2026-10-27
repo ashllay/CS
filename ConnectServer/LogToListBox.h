@@ -29,7 +29,7 @@ public:
     // Accessors
     HWND GetListBox() const { return m_hListBox; }
     BOOL IsWithDate() const { return m_bWithDate; }
-    CRITICAL_SECTION* GetCriticalSection() { return &m_cs; }
+    CRITICAL_SECTION* GetCriticalSection() { return &m_LogToListBoxcs; }
 
 protected:
     // Member variables (functional equivalent of original layout)
@@ -47,7 +47,7 @@ protected:
     int m_bWithDate;
 
     // Thread synchronization (original: offset 0x20008)
-    CRITICAL_SECTION m_cs;
+    CRITICAL_SECTION m_LogToListBoxcs;
 
 private:
     // Helper: Format message with optional timestamp

@@ -1,339 +1,294 @@
-#include "stdafx.h"
+#include "StdAfx.h"
+
+// 안준석 추가...준일이형 전 이거 넣어야 컴파일 되네여;;
+// _WINSOCKAPI_ 이 정의가 winsock2.h에 먼저 되어 있어서 그런것 같아여..
+#include "Ws2tcpip.h"
+
 #include "WzMultiCastSock.h"
+#include "process.h"				// _beginthreadex()
+
+#include "..\\include\\Prodef.h"
 
 CWzMultiCastSock::CWzMultiCastSock()
 {
-    WSADATA WSAData;
+	WSADATA wsadata;
+	WSAStartup(MAKEWORD(1, 1), &wsadata);
 
-    WSAStartup(MAKEWORD(1, 1), &WSAData);
-
-    m_hSocket = INVALID_SOCKET;
-
-    m_nEnumCount = 0;
-
-    m_pfnRecvCallback = NULL;
-    m_pfnErrorCallback = NULL;
-
-    memset(m_szLocalIP, 0, 0x280);
+	m_skSocket = INVALID_SOCKET;
+	m_iIPINFO_COUNT = 0;
+	m_lpfnCALLBACK_RECVNOTIFY = NULL;
+	m_lpfnCALLBACK_ERRORNOTIFY = NULL;
+	memset(m_stIPINFO_LIST, 0, sizeof(m_stIPINFO_LIST));
 }
+
 
 CWzMultiCastSock::~CWzMultiCastSock()
 {
-    shutdown(m_hSocket, 0);
-    closesocket(m_hSocket);
-
-    WSACleanup();
+	shutdown(m_skSocket, 0x00);
+	closesocket(m_skSocket);
+	WSACleanup();
 }
 
-int CWzMultiCastSock::DoEnumIpAddress()
+
+INT	CWzMultiCastSock::DoEnumIpAddress()
 {
-    hostent* pHost;
-    in_addr** h_addr_list;
-    in_addr* pAddr;
-    char name[128];
+	m_iIPINFO_COUNT = 0;
+	memset(m_stIPINFO_LIST, 0, sizeof(m_stIPINFO_LIST));
 
-    m_nEnumCount = 0;
+	char buf[128];
+	gethostname(buf, sizeof(buf));
 
-    memset(m_EnumIPs, 0, sizeof(m_EnumIPs));
+	LPHOSTENT lpHostent = gethostbyname(buf);
 
-    gethostname(name, sizeof(name));
+	in_addr* lpaddr;
 
-    pHost = gethostbyname(name);
+	switch (lpHostent->h_addrtype) {
 
-    if (pHost->h_addrtype == AF_INET)
-    {
-        h_addr_list = (in_addr**)pHost->h_addr_list;
+	case AF_INET:
 
-        pAddr = *h_addr_list;
+		while ((lpaddr = ((in_addr*)*lpHostent->h_addr_list++)) != NULL) {
+			m_stIPINFO_LIST[m_iIPINFO_COUNT].m_bInUsed = TRUE;
+			strcpy(m_stIPINFO_LIST[m_iIPINFO_COUNT++].m_szIPADDR, inet_ntoa(*lpaddr));
+			if (m_iIPINFO_COUNT >= MAX_IPINFO)	break;
+		}
 
-        pHost->h_addr_list = (char**)(h_addr_list + 1);
+		break;
+	}
 
-        while (pAddr)
-        {
-            m_EnumIPs[m_nEnumCount].bValid = 1;
-
-            strcpy(
-                m_EnumIPs[m_nEnumCount].szIP,
-                inet_ntoa(*pAddr));
-
-            ++m_nEnumCount;
-
-            if (m_nEnumCount >= MAX_ENUM_IPS)
-                break;
-
-            h_addr_list = (in_addr**)pHost->h_addr_list;
-
-            pAddr = *h_addr_list;
-
-            pHost->h_addr_list = (char**)(h_addr_list + 1);
-        }
-    }
-
-    return m_nEnumCount;
+	return m_iIPINFO_COUNT;
 }
 
-int CWzMultiCastSock::GetEnummedIpAddress(
-    unsigned int nIndex,
-    char* szOutBuffer)
+
+BOOL CWzMultiCastSock::GetEnummedIpAddress(INT iIPINDEX, LPSTR lpszOutputIpAddress)
 {
-    DWORD* pSrc;
+	if (iIPINDEX < 0 || iIPINDEX >= MAX_IPINFO)
+		return FALSE;
 
-    if (nIndex >= MAX_ENUM_IPS)
-        return 0;
+	if (m_stIPINFO_LIST[iIPINDEX].m_bInUsed == TRUE) {
+		if (lpszOutputIpAddress) {
+			memcpy(lpszOutputIpAddress, m_stIPINFO_LIST[iIPINDEX].m_szIPADDR, MAX_IPADDR_LEN);
+			return TRUE;
+		}
+	}
 
-    if (m_EnumIPs[nIndex].bValid != 1)
-        return 0;
-
-    if (!szOutBuffer)
-        return 0;
-
-    pSrc = (DWORD*)m_EnumIPs[nIndex].szIP;
-
-    ((DWORD*)szOutBuffer)[0] = pSrc[0];
-    ((DWORD*)szOutBuffer)[1] = pSrc[1];
-    ((DWORD*)szOutBuffer)[2] = pSrc[2];
-    ((DWORD*)szOutBuffer)[3] = pSrc[3];
-
-    return 1;
+	return FALSE;
 }
 
-int CWzMultiCastSock::StartMultiCast(char* szLocalIP)
+
+BOOL CWzMultiCastSock::StartMultiCast(LPSTR lpszIPADDR)		// 밀티캐스팅을 시작함
 {
-    sockaddr name;
-    ip_mreq mreq;
-    DWORD dwInterface;
 
-    if (m_hSocket != INVALID_SOCKET)
-    {
-        closesocket(m_hSocket);
-        m_hSocket = INVALID_SOCKET;
-    }
+	if (m_skSocket != INVALID_SOCKET) {
+		// 이전에 소켓이 생성되어 있었다면 닫는다.
+		closesocket(m_skSocket);
+		m_skSocket = INVALID_SOCKET;
+	}
 
-    if (szLocalIP)
-    {
-        memcpy(m_szLocalIP, szLocalIP, 16);
-    }
-    else
-    {
-        char szTempIP[16];
+	if (!lpszIPADDR) {
+		// 만약 지정된 IP가 없다면 IP를 받는다.
+		INT iCOUNT = DoEnumIpAddress();
+		if (iCOUNT > 0) {
+			char szText[MAX_IPADDR_LEN];
+			BOOL bRES = FALSE;
+			bRES = GetEnummedIpAddress(0, szText);
+			if (bRES) {
+				memcpy(m_szIPADDR_JOIN, szText, MAX_IPADDR_LEN);
+				m_szIPADDR_JOIN[MAX_IPADDR_LEN - 1] = 0;
+			}
+			else {
+				return FALSE;
+			}
+		}
+		else {
+			return FALSE;
+		}
+	}
+	else {
+		memcpy(m_szIPADDR_JOIN, lpszIPADDR, MAX_IPADDR_LEN);
+		m_szIPADDR_JOIN[MAX_IPADDR_LEN - 1] = 0;
+	}
 
-        if (DoEnumIpAddress() <= 0)
-            return 0;
+	m_skSocket = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+	if (m_skSocket == INVALID_SOCKET) {
+		m_skSocket = INVALID_SOCKET;
+		return FALSE;
+	}
 
-        if (!GetEnummedIpAddress(0, szTempIP))
-            return 0;
+	SOCKADDR_IN sockaddr;
+	sockaddr.sin_addr.s_addr = htonl(INADDR_ANY);
+	sockaddr.sin_family = AF_INET;
+	sockaddr.sin_port = htons(DEFAULT_MULTICAST_PORT);
 
-        memcpy(m_szLocalIP, szTempIP, 16);
-    }
+	INT iERR;
 
-    m_szLocalIP[15] = 0;
+	iERR = bind(m_skSocket, (LPSOCKADDR)&sockaddr, sizeof(SOCKADDR_IN));
+	if (iERR == SOCKET_ERROR) {
+		// 멀티캐스팅 시 기본포트로 대기할 수 있도록 소켓에 전체주소(0) 를 바인딩한다.
+		SaveLastError();
+		closesocket(m_skSocket);
+		m_skSocket = INVALID_SOCKET;
+		return FALSE;
+	}
 
-    m_hSocket = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+	ip_mreq mreq;
+	memset((char*)&mreq, 0, sizeof(ip_mreq));
+	mreq.imr_multiaddr.s_addr = inet_addr(DEFAULT_MULTICAST_IP);
+	mreq.imr_interface.s_addr = inet_addr(m_szIPADDR_JOIN);
 
-    if (m_hSocket == INVALID_SOCKET)
-    {
-        m_hSocket = INVALID_SOCKET;
-        return 0;
-    }
+	iERR = setsockopt(m_skSocket, IPPROTO_IP, IP_ADD_MEMBERSHIP, (char*)&mreq, sizeof(mreq));
+	if (iERR == SOCKET_ERROR) {
+		SaveLastError();
+		closesocket(m_skSocket);
+		m_skSocket = INVALID_SOCKET;
+		return FALSE;
+	}
 
-    memset(&name, 0, sizeof(name));
+	unsigned long addr = inet_addr(m_szIPADDR_JOIN);
+	iERR = setsockopt(m_skSocket, IPPROTO_IP, IP_MULTICAST_IF, (char*)&addr, sizeof(addr));
+	if (iERR == SOCKET_ERROR) {
+		SaveLastError();
+		closesocket(m_skSocket);
+		m_skSocket = INVALID_SOCKET;
+		return FALSE;
+	}
 
-    name.sa_family = AF_INET;
+	// 부모윈도우가 지정되지 않았다면 읽기 스레드를 생성한다.
+	m_hWorkerThread = (HANDLE)_beginthreadex(NULL, NULL, RecvThreadProc, (LPVOID)this, NULL, &m_idWorkerThread);
 
-    *(WORD*)name.sa_data = htons(DEFAULT_MULTICAST_PORT);
-
-    *(DWORD*)&name.sa_data[2] = htonl(INADDR_ANY);
-
-    if (bind(m_hSocket, &name, 16) == SOCKET_ERROR)
-    {
-        SaveLastError(0);
-
-        closesocket(m_hSocket);
-
-        m_hSocket = INVALID_SOCKET;
-
-        return 0;
-    }
-
-    mreq.imr_multiaddr.s_addr =
-        inet_addr(DEFAULT_MULTICAST_GROUP);
-
-    mreq.imr_interface.s_addr =
-        inet_addr(m_szLocalIP);
-
-    if (setsockopt(
-        m_hSocket,
-        0,
-        5,
-        (char*)&mreq,
-        8) == SOCKET_ERROR)
-    {
-        SaveLastError(0);
-
-        closesocket(m_hSocket);
-
-        m_hSocket = INVALID_SOCKET;
-
-        return 0;
-    }
-
-    dwInterface = inet_addr(m_szLocalIP);
-
-    if (setsockopt(
-        m_hSocket,
-        0,
-        2,
-        (char*)&dwInterface,
-        4) == SOCKET_ERROR)
-    {
-        SaveLastError(0);
-
-        closesocket(m_hSocket);
-
-        m_hSocket = INVALID_SOCKET;
-
-        return 0;
-    }
-
-    m_hRecvThread = (HANDLE)_beginthreadex(
-        NULL,
-        0,
-        RecvThreadProc,
-        this,
-        0,
-        (unsigned int*)&m_dwRecvThreadID);
-
-    return 1;
+	return TRUE;
 }
 
-int CWzMultiCastSock::ReStartMultiCast()
+BOOL CWzMultiCastSock::ReStartMultiCast()			// 멀티캐스팅 도중 이 함수를 호출하여 이전의 설정으로 그룹 재가입을 시도
 {
-    EndMultiCast();
+	EndMultiCast();
 
-    return StartMultiCast(m_szLocalIP);
+	return StartMultiCast(m_szIPADDR_JOIN);
 }
 
-void CWzMultiCastSock::EndMultiCast()
+
+VOID CWzMultiCastSock::EndMultiCast()			// 밀티캐스팅을 종료함
 {
-    if (m_hSocket != INVALID_SOCKET)
-    {
-        closesocket(m_hSocket);
+	if (m_skSocket != INVALID_SOCKET) {
+		// 이전에 소켓이 생성되어 있었다면 닫는다.
+		closesocket(m_skSocket);
+		m_skSocket = INVALID_SOCKET;
+	}
 
-        m_hSocket = INVALID_SOCKET;
-    }
-
-    if (m_hRecvThread != INVALID_HANDLE_VALUE)
-    {
-        TerminateThread(m_hRecvThread, 0);
-
-        CloseHandle(m_hRecvThread);
-
-        m_hRecvThread = INVALID_HANDLE_VALUE;
-    }
+	if (m_hWorkerThread != INVALID_HANDLE_VALUE) {
+		TerminateThread(m_hWorkerThread, 0);
+		CloseHandle(m_hWorkerThread);
+		m_hWorkerThread = INVALID_HANDLE_VALUE;
+	}
 }
 
-int CWzMultiCastSock::SendData(char* buf, int len)
+
+BOOL CWzMultiCastSock::SendData(LPSTR lpBUFFER, INT iBUFSIZE)		// 밀티캐스트 그룹에 데이터를 보냄
 {
-    sockaddr to;
+	if (!lpBUFFER)
+		return FALSE;
 
-    if (!buf)
-        return 0;
+	SOCKADDR_IN sockaddr;
+	sockaddr.sin_family = AF_INET;
+	sockaddr.sin_addr.s_addr = inet_addr(DEFAULT_MULTICAST_IP);
+	sockaddr.sin_port = htons(DEFAULT_MULTICAST_PORT);
 
-    to.sa_family = AF_INET;
-    *(DWORD*)&to.sa_data[2] =inet_addr(DEFAULT_MULTICAST_GROUP);
-    *(WORD*)to.sa_data =htons(DEFAULT_MULTICAST_PORT);
+	int iSENDBYTES = sendto(m_skSocket, lpBUFFER, iBUFSIZE, 0, (LPSOCKADDR)&sockaddr, sizeof(sockaddr));
 
-    if (sendto(m_hSocket,buf,len,0,&to,16) >= 0)
-    {
-        return 1;
-    }
-    SaveLastError(0);
-    closesocket(m_hSocket);
-    m_hSocket = INVALID_SOCKET;
+	if (iSENDBYTES == SOCKET_ERROR) {
+		SaveLastError();
+		closesocket(m_skSocket);
+		m_skSocket = INVALID_SOCKET;
+		return FALSE;
+	}
+	else if (iSENDBYTES < -1) {
+		SaveLastError();
+		closesocket(m_skSocket);
+		m_skSocket = INVALID_SOCKET;
+		return FALSE;
+	}
 
-    return 0;
+	return TRUE;
 }
 
-void CWzMultiCastSock::SaveLastError(int nError)
+
+VOID CWzMultiCastSock::SaveLastError(INT iErrorNo)
 {
-    int Error;
-    Error = nError;
+	if (!iErrorNo)
+		m_uLastErrorNum = WSAGetLastError();
+	else
+		m_uLastErrorNum = iErrorNo;
 
-    if (!Error)
-        Error = WSAGetLastError();
+	memset(m_szLastErrorMessage, 0, sizeof(m_szLastErrorMessage));
 
-    m_nLastError = Error;
+	FormatMessage(FORMAT_MESSAGE_FROM_SYSTEM, NULL, m_uLastErrorNum, 0, m_szLastErrorMessage, sizeof(m_szLastErrorMessage), NULL);
 
-    memset(m_szErrorMsg, 0, sizeof(m_szErrorMsg));
-
-    FormatMessageA(FORMAT_MESSAGE_FROM_SYSTEM,NULL,m_nLastError,0,m_szErrorMsg,sizeof(m_szErrorMsg),NULL);
-
-    if (m_pfnErrorCallback)
-    {
-        m_pfnErrorCallback(this,m_nLastError,m_szErrorMsg);
-    }
+	if (m_lpfnCALLBACK_ERRORNOTIFY)
+		(*m_lpfnCALLBACK_ERRORNOTIFY) (this, m_uLastErrorNum, m_szLastErrorMessage);
 }
 
-void CWzMultiCastSock::SavePrivateErrorMessage(char* szMsg)
+
+VOID CWzMultiCastSock::SavePrivateErrorMessage(LPSTR lpszErrorMessage)
 {
-    m_nLastError = 0;
+	m_uLastErrorNum = 0;
+	strcpy(m_szLastErrorMessage, lpszErrorMessage);
 
-    strcpy(m_szErrorMsg, szMsg);
-
-    if (m_pfnErrorCallback)
-    {
-        m_pfnErrorCallback(this,m_nLastError,m_szErrorMsg);
-    }
+	if (m_lpfnCALLBACK_ERRORNOTIFY)
+		(*m_lpfnCALLBACK_ERRORNOTIFY) (this, m_uLastErrorNum, m_szLastErrorMessage);
 }
 
-unsigned int __stdcall CWzMultiCastSock::RecvThreadProc(void* pParam)
+
+unsigned int _stdcall CWzMultiCastSock::RecvThreadProc(LPVOID lpParam)
 {
-    CWzMultiCastSock* lpThis;
-    sockaddr from;
-    int fromlen;
-    int nRecv;
+	char cBUFFER[1024];
+	SOCKADDR_IN sockaddr;
+	int isockaddr_len = sizeof(sockaddr);
 
-    char buf[MULTICAST_RECV_BUFFER_SIZE];
+	CWzMultiCastSock* lpCMSock = (CWzMultiCastSock*)lpParam;
 
-    lpThis = (CWzMultiCastSock*)pParam;
+	lpCMSock->m_skSocket;
 
-    fromlen = 16;
+	while (1) {
+		int iRecvLen = recvfrom(lpCMSock->m_skSocket, cBUFFER, sizeof(cBUFFER), 0, (LPSOCKADDR)&sockaddr, &isockaddr_len);
 
-    while (1)
-    {
-        nRecv = recvfrom(lpThis->m_hSocket,buf,MULTICAST_RECV_BUFFER_SIZE,0,&from,&fromlen);
+		if (iRecvLen == SOCKET_ERROR) {
+			lpCMSock->SaveLastError();
+			closesocket(lpCMSock->m_skSocket);
+			lpCMSock->m_skSocket = INVALID_SOCKET;
+			break;
+		}
+		else if (iRecvLen < 0) {
+			lpCMSock->SavePrivateErrorMessage("RecvThreadProc() ERROR : iRecvLen < 0");
+			closesocket(lpCMSock->m_skSocket);
+			lpCMSock->m_skSocket = INVALID_SOCKET;
+			break;
+		}
 
-        if (nRecv == SOCKET_ERROR)
-        {
-            lpThis->SaveLastError(0);
-            closesocket(lpThis->m_hSocket);
-            goto LABEL_ERROR;
-        }
+		// 실제로 받은 패킷을 파싱
+		INT iSize = 0;
+		BYTE btHeadCode = 0, btSubCode = 0;				// sub code can be no use. (most of time it'll be a trash)
 
-        if (nRecv < 0)
-            break;
+		switch ((unsigned char)cBUFFER[0]) {
 
-        if ((BYTE)buf[0] == PMHC_BYTE)
-        {
-            if (lpThis->m_pfnRecvCallback)
-            {
-                lpThis->m_pfnRecvCallback(lpThis,*(DWORD*)&from.sa_data[2],(BYTE)buf[2],(BYTE)buf[3],buf,nRecv);
-            }
-        }
-        else if ((BYTE)buf[0] == PMHC_WORD)
-        {
-            if (lpThis->m_pfnRecvCallback)
-            {
-                lpThis->m_pfnRecvCallback(lpThis,*(DWORD*)&from.sa_data[2],(BYTE)buf[3],(BYTE)buf[4],buf,
-                    nRecv);
-            }
-        }
-    }
+		case 0xC1:	// packet size is byte range ( 1 ~ 255 )
+			iSize = ((LPPBMSG_HEAD)(cBUFFER))->size;
+			btHeadCode = ((LPPBMSG_HEAD)(cBUFFER))->headcode;
+			btSubCode = ((LPPBMSG_HEAD2)(cBUFFER))->subcode;
+			if (lpCMSock->m_lpfnCALLBACK_RECVNOTIFY)
+				(*lpCMSock->m_lpfnCALLBACK_RECVNOTIFY) (lpCMSock, sockaddr.sin_addr.s_addr, btHeadCode, btSubCode, cBUFFER, iRecvLen);
+			break;
 
-    lpThis->SavePrivateErrorMessage("RecvThreadProc error");
-    closesocket(lpThis->m_hSocket);
+		case 0xC2:	// packet size is word range ( 1 ~ 65535 )
+			iSize = ((INT)(((LPPWMSG_HEAD)(cBUFFER))->sizeH << 8)) + ((LPPWMSG_HEAD)(cBUFFER))->sizeL;
+			btHeadCode = ((LPPWMSG_HEAD)(cBUFFER))->headcode;
+			btSubCode = ((LPPWMSG_HEAD2)(cBUFFER))->subcode;
+			if (lpCMSock->m_lpfnCALLBACK_RECVNOTIFY)
+				(*lpCMSock->m_lpfnCALLBACK_RECVNOTIFY) (lpCMSock, sockaddr.sin_addr.s_addr, btHeadCode, btSubCode, cBUFFER, iRecvLen);
+			break;
 
-LABEL_ERROR:
-    lpThis->m_hSocket = INVALID_SOCKET;
-    return 0;
+		default:	// must be error
+			break;
+		}
+	}
+
+	return 0;
 }

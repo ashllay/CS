@@ -8,7 +8,8 @@
 #include <pdhmsg.h>
 
 #include <map>
-
+#include <vector>
+using namespace std;
 #pragma comment(lib, "pdh.lib")
 
 #define MAX_RAW_VALUES 20
@@ -64,10 +65,11 @@ public:
 public:
 
 	BOOL CollectQueryData();
-	long GetCounterValue(int nIndex);
 	BOOL GetStatistics(long* nMin, long* nMax, long* nMean, int nIndex);
+	long GetCounterValue(int nIndex);
 
 protected:
+	LPPDHCOUNTERSTRUCT GetCounterStruct(int nIndex);
 
 	BOOL UpdateValue(PDHCOUNTERSTRUCT& Counter);
 	BOOL UpdateRawValue(PDHCOUNTERSTRUCT& Counter);
@@ -75,7 +77,7 @@ protected:
 protected:
 
 	HQUERY m_hQuery;
-	std::map<int, PDHCOUNTERSTRUCT> m_aCounters;
+	vector<LPPDHCOUNTERSTRUCT> m_aCounters;	//std::map<int, PDHCOUNTERSTRUCT> m_aCounters;
 	int m_nNextIndex;
 };
 

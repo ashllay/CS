@@ -24,8 +24,14 @@ void UdpProtocolCore(BYTE protoNum, BYTE* aRecv, int aLen, char* ip)
 
 void GameServerInfo(PMSG_SERVERINFO* lpMsg)
 {
-	GameServerInfoUpdate(lpMsg->ServerCode, lpMsg->Percent, lpMsg->MaxUserCount, 0, 0, lpMsg->UserCount);
-	//GameServerInfoUpdate(lpMsg->ServerCode, lpMsg->Percent, lpMsg->UserCount, 0, 0, lpMsg->MaxUserCount);
+	GameServerInfoUpdate(
+		lpMsg->ServerCode,
+		lpMsg->Percent,
+		lpMsg->UserCount,
+		0,
+		0,
+		lpMsg->MaxUserCount);
+
 	CServerListMake();
 }
 
@@ -51,10 +57,11 @@ void CSGetServerExtInfo(PMSG_GAMESERVER_EXTINFO* lpMsg)
 	{
 		if (GameServerList[n].ServerCode == lpMsg->ServerCode)
 		{
-			GameServerList[n].bShow = 1;
-			GameServerList[n].ServerType = lpMsg->ServerType;
+			GameServerList[n].ExtInfoReceived = 1;
+			GameServerList[n].IsPK = lpMsg->btIsPK;
 
-			if (strcmp(lpMsg->ServerVersion, "") == 0)
+			// NOTE: The original checks ClientVersion here but copies ServerVersion below.
+			if (strcmp(lpMsg->ClientVersion, "") == 0)
 			{
 				memset(GameServerList[n].ServerVersion,0,sizeof(GameServerList[n].ServerVersion));
 			}

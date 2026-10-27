@@ -2,12 +2,8 @@
 //
 //////////////////////////////////////////////////////////////////////
 
-#if !defined(AFX_WZUDP_H__E6DD88C5_2F76_4C09_82DD_FE7D27E6822D__INCLUDED_)
-#define AFX_WZUDP_H__E6DD88C5_2F76_4C09_82DD_FE7D27E6822D__INCLUDED_
-
-#if _MSC_VER > 1000
-#pragma once
-#endif // _MSC_VER > 1000
+#ifndef __WZUDP_H__
+#define __WZUDP_H__
 
 #define DEFAULT_BUFFER_LENGTH   4096
 

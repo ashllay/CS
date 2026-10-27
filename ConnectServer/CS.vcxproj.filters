@@ -42,7 +42,7 @@
     <Image Include="monitor_red.ico">
       <Filter>Resource Files</Filter>
     </Image>
-    <Image Include="node_split.ico">
+    <Image Include="node_waiting.ico">
       <Filter>Resource Files</Filter>
     </Image>
     <Image Include="toolbar_strip.bmp">
